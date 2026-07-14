@@ -1,0 +1,146 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart' as legacy; // sha256 para hash dos recovery codes
+import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
+
+import '../models/argon2_params.dart';
+import '../models/vault_settings.dart';
+import '../services/crypto_service.dart';
+import '../services/totp_service.dart';
+import 'vault_repository.dart';
+
+class SetupResult {
+  final String totpSecret;
+  final String keyUri;
+  final List<String> recoveryCodes;
+  const SetupResult({required this.totpSecret, required this.keyUri, required this.recoveryCodes});
+}
+
+class SessionProvider extends ChangeNotifier {
+  final VaultRepository _repo;
+  final CryptoService _crypto;
+  final TotpService _totp;
+  final Argon2Params _params;
+
+  SessionProvider(this._repo, this._crypto, this._totp, this._params);
+
+  bool _isSetup = false;
+  Uint8List? _dek;
+  Timer? _lockTimer;
+  VaultSettings _settings = const VaultSettings();
+
+  // Dados de setup gerados mas ainda não confirmados/persistidos
+  Uint8List? _pendingDek;
+  String? _pendingSecret;
+  VaultMetaRow? _pendingMeta;
+
+  bool get isSetup => _isSetup;
+  bool get isUnlocked => _dek != null;
+  Uint8List? get dek => _dek;
+  VaultSettings get settings => _settings;
+  CryptoService get crypto => _crypto;
+
+  Future<void> refreshStatus() async {
+    _isSetup = await _repo.isSetup();
+    notifyListeners();
+  }
+
+  /// Gera as chaves e o segredo TOTP, mas NÃO persiste nem notifica — assim a
+  /// tela de setup pode exibir o QR sem que o roteador troque de tela. A
+  /// persistência acontece em [confirmSetup], após o usuário validar o código.
+  Future<SetupResult> setup(String masterPassword) async {
+    final salt = _crypto.randomSalt();
+    final kek = await _crypto.deriveKek(masterPassword, salt, _params);
+    final dek = _crypto.generateDek();
+    final wrapped = await _crypto.wrapDek(dek, kek);
+
+    final secret = _totp.generateSecret();
+    final keyUri = _totp.keyUri(secret, label: 'cofre', issuer: 'Keyring');
+    final totpEnc = await _crypto.encrypt(secret, dek);
+
+    final codes = List<String>.generate(8, (_) => const Uuid().v4().replaceAll('-', '').substring(0, 10));
+    final codesHash = jsonEncode(
+        codes.map((c) => legacy.sha256.convert(utf8.encode(c)).toString()).toList());
+
+    _pendingDek = dek;
+    _pendingSecret = secret;
+    _pendingMeta = VaultMetaRow(
+      argon2Salt: salt,
+      argon2Params: jsonEncode(_params.toJson()),
+      wrappedDek: wrapped,
+      totpSecretEnc: totpEnc,
+      recoveryCodesHash: codesHash,
+      settings: jsonEncode(const VaultSettings().toJson()),
+      createdAt: DateTime.now().toIso8601String(),
+    );
+    return SetupResult(totpSecret: secret, keyUri: keyUri, recoveryCodes: codes);
+  }
+
+  /// Valida o código TOTP do setup pendente; se correto, persiste o cofre e já
+  /// deixa desbloqueado. Retorna false se não há setup pendente ou o código é inválido.
+  Future<bool> confirmSetup(String code) async {
+    final meta = _pendingMeta;
+    final secret = _pendingSecret;
+    final dek = _pendingDek;
+    if (meta == null || secret == null || dek == null) return false;
+    if (!_totp.verify(code, secret)) return false;
+    await _repo.saveVaultMeta(meta);
+    _dek = dek;
+    _isSetup = true;
+    _settings = const VaultSettings();
+    _pendingDek = null;
+    _pendingSecret = null;
+    _pendingMeta = null;
+    _startTimer();
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> unlock(String masterPassword, String totpToken) async {
+    final meta = await _repo.loadVaultMeta();
+    if (meta == null) return false;
+    final params = Argon2Params.fromJson(jsonDecode(meta.argon2Params) as Map<String, dynamic>);
+    final kek = await _crypto.deriveKek(masterPassword, meta.argon2Salt, params);
+    Uint8List dek;
+    try {
+      dek = await _crypto.unwrapDek(meta.wrappedDek, kek);
+    } catch (_) {
+      return false; // senha errada (tag GCM)
+    }
+    final secret = await _crypto.decrypt(meta.totpSecretEnc, dek);
+    if (!_totp.verify(totpToken, secret)) return false;
+    _dek = dek;
+    _settings = VaultSettings.fromJson(jsonDecode(meta.settings) as Map<String, dynamic>);
+    _startTimer();
+    notifyListeners();
+    return true;
+  }
+
+  void _startTimer() {
+    _lockTimer?.cancel();
+    final mins = _settings.autoLockMinutes;
+    if (mins > 0) _lockTimer = Timer(Duration(minutes: mins), lock);
+  }
+
+  void touch() {
+    if (isUnlocked) _startTimer();
+  }
+
+  void lock() {
+    _lockTimer?.cancel();
+    _lockTimer = null;
+    if (_dek != null) {
+      _dek!.fillRange(0, _dek!.length, 0);
+      _dek = null;
+    }
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _lockTimer?.cancel();
+    super.dispose();
+  }
+}
