@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:cryptography/cryptography.dart' show SecretBoxAuthenticationError;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
@@ -39,8 +41,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final backup = _backup();
     final content = await backup.export(dek, _exportPw.text);
     final dir = await getApplicationDocumentsDirectory();
-    final fileName = 'keyring-backup-${DateTime.now().millisecondsSinceEpoch}.vault';
-    final path = p.join(dir.path, fileName);
+    // nome com data/hora legível; nunca sobrescreve um backup existente
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final stamp =
+        '${now.year}-${two(now.month)}-${two(now.day)}_${two(now.hour)}-${two(now.minute)}-${two(now.second)}';
+    var path = p.join(dir.path, 'keyring-backup-$stamp.vault');
+    var i = 2;
+    while (await File(path).exists()) {
+      path = p.join(dir.path, 'keyring-backup-${stamp}_$i.vault');
+      i++;
+    }
     await File(path).writeAsString(content);
     messenger.showSnackBar(SnackBar(content: Text('Backup salvo em: $path')));
   }
@@ -51,14 +62,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final dek = context.read<SessionProvider>().dek!;
     final backup = _backup();
     final res = await FilePicker.pickFiles(withData: true, dialogTitle: 'Escolher backup .vault');
-    if (res == null || res.files.single.bytes == null) return;
-    final content = String.fromCharCodes(res.files.single.bytes!);
+    if (res == null) return;
+    final f = res.files.single;
+    // leitura robusta: prefere o caminho do arquivo (desktop); fallback para os bytes
+    String content;
+    if (f.path != null) {
+      content = await File(f.path!).readAsString();
+    } else if (f.bytes != null) {
+      content = utf8.decode(f.bytes!);
+    } else {
+      messenger.showSnackBar(const SnackBar(content: Text('Não foi possível ler o arquivo selecionado.')));
+      return;
+    }
     try {
       final n = await backup.import(dek, content, _importPw.text);
       await vault.loadCredentials();
       messenger.showSnackBar(SnackBar(content: Text('$n itens importados')));
-    } catch (_) {
-      messenger.showSnackBar(const SnackBar(content: Text('Falha ao importar (senha incorreta?)')));
+    } on SecretBoxAuthenticationError {
+      messenger.showSnackBar(const SnackBar(content: Text('Senha do backup incorreta.')));
+    } on FormatException {
+      messenger.showSnackBar(const SnackBar(content: Text('Arquivo de backup inválido ou corrompido.')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Falha ao importar: $e')));
     }
   }
 

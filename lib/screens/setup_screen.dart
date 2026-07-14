@@ -28,7 +28,14 @@ class _SetupScreenState extends State<SetupScreen> {
     if (_pw.text != _confirm.text) return _toast('As senhas não coincidem');
     setState(() => _busy = true);
     final res = await context.read<SessionProvider>().setup(_pw.text);
-    if (mounted) setState(() => _result = res);
+    // reabilita a UI ao avançar para a etapa do TOTP; sem isto o botão
+    // "Confirmar e entrar" fica desabilitado (só o Enter funcionava).
+    if (mounted) {
+      setState(() {
+        _result = res;
+        _busy = false;
+      });
+    }
   }
 
   Future<void> _confirmAndEnter() async {
