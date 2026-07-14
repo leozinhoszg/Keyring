@@ -3,6 +3,13 @@
 Todas as mudanças notáveis do **Keyring** são documentadas aqui.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/) e o versionamento é [SemVer](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Adicionado
+- **Build de APK na nuvem** via GitHub Actions (`.github/workflows/build-apk.yml`): o APK Android
+  passa a ser gerado num ambiente limpo (Ubuntu), sem depender da máquina local nem de exceções de
+  antivírus. Disparo manual pela aba Actions ou automático ao criar uma tag `v*`.
+
 ## [1.0.1] — 2026-07-14
 
 ### Corrigido

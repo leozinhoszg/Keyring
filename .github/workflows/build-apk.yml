@@ -1,0 +1,67 @@
+name: Build APK
+
+# Builda o APK Android na nuvem (Ubuntu limpo) — sem depender da máquina local
+# nem de antivírus. Disparo manual (Actions → Run workflow) ou automático ao criar
+# uma tag "v*". O APK sai como artefato de download e, quando há tag, anexado ao release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release para anexar o APK (ex.: v1.0.1). Vazio = só artefato.'
+        required: false
+        default: 'v1.0.1'
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter --version
+      - run: flutter pub get
+      - run: flutter build apk --release
+
+      - name: Renomear APK com a versão
+        run: |
+          VER=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          cp build/app/outputs/flutter-apk/app-release.apk "keyring-${VER}.apk"
+          echo "APK=keyring-${VER}.apk" >> "$GITHUB_ENV"
+
+      - name: Publicar como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyring-apk
+          path: ${{ env.APK }}
+
+      - name: Anexar ao release (quando houver tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ] && [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [ -n "$TAG" ]; then
+            gh release upload "$TAG" "${APK}" --clobber -R "${GITHUB_REPOSITORY}"
+            echo "APK anexado ao release ${TAG}"
+          else
+            echo "Sem tag informada — APK disponível apenas como artefato."
+          fi
