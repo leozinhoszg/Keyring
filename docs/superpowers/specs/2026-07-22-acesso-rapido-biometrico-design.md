@@ -197,6 +197,23 @@ rótulo "Windows Hello", não "digital", para não enganar.
 invalida o acesso rápido — tecnicamente não precisa (o DEK não muda), mas quem troca a senha
 mestra normalmente suspeita de comprometimento.
 
+### Risco pré-existente que este design amplifica: recovery codes não recuperam nada
+
+Os 8 códigos gerados no setup são exibidos ao usuário e têm o SHA-256 gravado em
+`recovery_codes_hash`, mas **nenhum código no app lê essa coluna** — não existe fluxo de
+recuperação. E não é questão de faltar uma tela: o DEK só está envolvido pela KEK da senha
+mestra (`wrapped_dek`). Não existe uma segunda cópia envolvida por chave derivada dos
+códigos, e um hash não reconstrói chave alguma. Esquecer a senha mestra hoje significa perder
+o cofre — os códigos guardados não mudam isso.
+
+O acesso rápido não cria esse problema, mas mexe nos dois lados dele: reduz a repetição que
+mantinha a senha mestra na memória muscular (de várias vezes ao dia para uma vez por semana)
+e, ao mesmo tempo, abre a única saída viável — uma sessão aberta por biometria tem o DEK em
+mãos e poderia re-envolvê-lo com uma senha nova.
+
+Fora do escopo desta spec. Registrado aqui porque a decisão de tratá-lo, e como, deve ser
+tomada com o acesso rápido em vista.
+
 ## Interface
 
 ### `UnlockScreen` — dois modos
@@ -249,10 +266,9 @@ adicionar injeção de tempo ao código de produção só para teste.
 
 ## Riscos de implementação
 
-**minSdk.** `local_auth` e `flutter_secure_storage` exigem API 23. O projeto usa
-`flutter.minSdkVersion` em `android/app/build.gradle.kts`, que pode estar em 21. Se estiver,
-subir para 23 — isso afeta o build de APK no GitHub Actions, então é a **primeira** coisa a
-validar no plano, não a última.
+**minSdk — resolvido, sem ação.** `local_auth` e `flutter_secure_storage` exigem API 23. O
+projeto usa `flutter.minSdkVersion`, que no Flutter estável instalado vale **24**
+(`FlutterExtension.kt:26`). Nada a mexer no Gradle e nada muda no workflow de APK.
 
 **`local_auth` no Windows.** O suporte vem do pacote federado `local_auth_windows`
 (`UserConsentVerifier`). Confirmar que está incluído por padrão na versão escolhida de
