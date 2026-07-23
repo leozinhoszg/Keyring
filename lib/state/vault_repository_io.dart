@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:sqflite/sqflite.dart';
 import 'vault_repository.dart';
 
@@ -28,6 +29,17 @@ class SqliteVaultRepository implements VaultRepository {
       wrappedDek: m['wrapped_dek'] as dynamic, totpSecretEnc: m['totp_secret_enc'] as dynamic,
       recoveryCodesHash: m['recovery_codes_hash'] as String, settings: m['settings'] as String,
       createdAt: m['created_at'] as String,
+      wrappedDekQuick: m['wrapped_dek_quick'] as dynamic,
+      quickExpiresAt: m['quick_expires_at'] as String?,
+    );
+  }
+
+  @override
+  Future<void> updateQuickUnlock(Uint8List? wrapped, String? expiresAt) async {
+    await _db.update(
+      'vault_meta',
+      {'wrapped_dek_quick': wrapped, 'quick_expires_at': expiresAt},
+      where: 'id = 1',
     );
   }
 

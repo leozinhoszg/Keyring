@@ -36,4 +36,39 @@ void main() {
     await repo.deleteCredential('c1');
     expect(await repo.findCredential('c1'), isNull);
   });
+
+  test('updateQuickUnlock grava e limpa apenas as colunas do acesso rapido', () async {
+    final repo = await freshRepo();
+
+    await repo.saveVaultMeta(VaultMetaRow(
+      argon2Salt: Uint8List.fromList([1, 2]),
+      argon2Params: '{}',
+      wrappedDek: Uint8List.fromList([3, 4]),
+      totpSecretEnc: Uint8List.fromList([5, 6]),
+      recoveryCodesHash: '[]',
+      settings: '{}',
+      createdAt: 'agora',
+    ));
+
+    // recem-criado: acesso rapido desligado
+    var meta = await repo.loadVaultMeta();
+    expect(meta!.wrappedDekQuick, isNull);
+    expect(meta.quickExpiresAt, isNull);
+
+    // grava
+    await repo.updateQuickUnlock(Uint8List.fromList([9, 9, 9]), '2026-08-01T00:00:00.000');
+    meta = await repo.loadVaultMeta();
+    expect(meta!.wrappedDekQuick, Uint8List.fromList([9, 9, 9]));
+    expect(meta.quickExpiresAt, '2026-08-01T00:00:00.000');
+    expect(meta.wrappedDek, Uint8List.fromList([3, 4]),
+        reason: 'a meta original nao pode ser tocada');
+
+    // limpa
+    await repo.updateQuickUnlock(null, null);
+    meta = await repo.loadVaultMeta();
+    expect(meta!.wrappedDekQuick, isNull);
+    expect(meta.quickExpiresAt, isNull);
+    expect(meta.totpSecretEnc, Uint8List.fromList([5, 6]),
+        reason: 'limpar o acesso rapido nao pode afetar o resto');
+  });
 }

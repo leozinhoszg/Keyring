@@ -3,7 +3,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import '../state/vault_repository.dart' show createSchema;
+import '../state/vault_repository.dart' show createSchema, migrateVault;
 
 export 'package:sqflite/sqflite.dart' show Database;
 
@@ -13,7 +13,7 @@ export 'package:sqflite/sqflite.dart' show Database;
 /// correspondente em [_migrate]. Migrações só devem ADICIONAR/ALTERAR
 /// (ALTER TABLE, novas tabelas) — NUNCA `DROP`/`DELETE` de dados. Assim uma
 /// atualização do app jamais apaga o vault do usuário.
-const int kVaultSchemaVersion = 1;
+const int kVaultSchemaVersion = 2;
 
 bool _ffiReady = false;
 
@@ -43,7 +43,7 @@ Future<Database> openKeyringDatabase({String? path}) async {
     version: kVaultSchemaVersion,
     onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
     onCreate: (db, _) => createSchema(db),
-    onUpgrade: _migrate,
+    onUpgrade: migrateVault,
   );
 }
 
@@ -74,16 +74,6 @@ Future<int> _readSchemaVersion(String dbPath) async {
   }
 }
 
-/// Migrações incrementais entre versões de schema. Cada degrau preserva os dados.
-Future<void> _migrate(Database db, int oldVersion, int newVersion) async {
-  // Padrão para futuras versões (exemplo — NÃO ativo em v1):
-  //
-  // if (oldVersion < 2) {
-  //   await db.execute('ALTER TABLE credentials ADD COLUMN favorite_order INTEGER');
-  // }
-  // if (oldVersion < 3) {
-  //   await db.execute('CREATE TABLE IF NOT EXISTS attachments (...)');
-  // }
-  //
-  // Regra: apenas ADD/ALTER/CREATE. Nunca DROP/DELETE de dados aqui.
-}
+// As migrações vivem em `migrateVault`, no vault_repository.dart, ao lado do
+// createSchema — assim o schema e seus degraus mudam juntos, e o teste pode
+// exercitar a migração real do app.
