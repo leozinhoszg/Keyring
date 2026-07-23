@@ -43,3 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Assinatura do APK — NUNCA versionar. Perder a chave impede atualizar o app
+# instalado; vazá-la permite que outra pessoa publique um APK como se fosse você.
+/android/key.properties
+*.jks
+*.keystore

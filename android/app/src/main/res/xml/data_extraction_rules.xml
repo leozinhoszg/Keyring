@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Impede que o cofre saia do aparelho por qualquer via do sistema.
+
+  `android:allowBackup="false"` no manifest já bloqueia o Auto Backup e o `adb backup`,
+  mas a partir do Android 12 (API 31) ele NÃO cobre a transferência direta entre
+  aparelhos (D2D), usada ao migrar para um celular novo. Essas regras fecham as duas
+  vias explicitamente.
+
+  Consequência intencional: o `vault.db` nunca é copiado para a conta Google nem
+  transferido na troca de aparelho. Para levar o cofre a outro dispositivo, use
+  Configurações → Exportar backup, que gera um `.vault` cifrado com senha própria.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>
