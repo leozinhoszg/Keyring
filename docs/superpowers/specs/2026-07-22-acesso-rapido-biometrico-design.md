@@ -31,6 +31,10 @@ e é por isso que a substituta precisa estar presa ao dispositivo.
 | Login completo obrigatório | A cada 7 dias, contados do último login completo |
 | Auto-lock por inatividade | Continua em 5 minutos (agora custa um toque) |
 | Onde mora a chave | Metade no keystore do SO, metade no `vault.db` |
+| Proteção da chave no Android | Presa ao hardware — `AndroidOptions.biometric` |
+| minSdk | Sobe de 24 para **28** (exigido pela chave biométrica) |
+| Fallback quando a digital falha | Aceita o PIN/padrão do aparelho (`biometricOrDeviceCredential`) |
+| Aparelho sem tela de bloqueio | Acesso rápido recusado (`enforceBiometrics: true`) |
 
 ## Arquitetura
 
@@ -61,22 +65,39 @@ A alternativa avaliada e recusada foi guardar o DEK direto no keystore: economiz
 migração de schema, mas expõe o DEK cru ao storage do SO e perde a separação
 banco/dispositivo.
 
-### Escolha do backend e seu limite
+### Escolha do backend: forte no Android, lógico no Windows
 
-Implementação em Dart puro com `local_auth` + `flutter_secure_storage`, sem código nativo.
+Implementação em Dart puro com `flutter_secure_storage` ^10.3.1 e `local_auth` ^3.0.2. As
+duas plataformas alcançam níveis de proteção diferentes, e a diferença é material.
 
-O limite honesto: a ligação entre a biometria e a chave é **lógica**, decidida pelo app —
-o app autentica e, se der certo, lê a chave. Um Android com root, ou malware rodando como o
-mesmo usuário no Windows, conseguiria extrair a `quickKey`. É o mesmo modelo que Bitwarden
-e 1Password usam no desktop.
+**Android — chave presa ao hardware.** O `AndroidOptions.biometric` faz o backend nativo do
+pacote gerar a chave dentro do Keystore com:
 
-A alternativa forte (chave gerada dentro do Keystore com `setUserAuthenticationRequired`,
-liberada por `BiometricPrompt` com `CryptoObject`, nunca saindo do TEE/StrongBox) exigiria
-plugin nativo em Kotlin e WinRT — semanas de trabalho e manutenção contínua, contra um
-atacante que, tendo root no aparelho, também captura a digital no próximo desbloqueio.
+```java
+builder.setUserAuthenticationRequired(true);
+builder.setUserAuthenticationParameters(0, authTypes);  // timeout 0 = autentica a cada uso
+builder.setInvalidatedByBiometricEnrollment(true);
+builder.setUnlockedDeviceRequired(true);                 // API 28+
+builder.setIsStrongBoxBacked(true);                      // quando o aparelho tem StrongBox
+```
 
-**O formato de dados não fecha essa porta.** A `quickKey` continua sendo 32 bytes; migrar
-para o backend nativo depois troca apenas quem os guarda, sem alterar o schema.
+(verificado em `KeyCipherImplementationAES23.java:140-185` do pacote, não na documentação)
+
+A `quickKey` nunca sai do TEE, cada leitura exige autenticação, e cadastrar uma digital nova
+no aparelho **destrói** a chave. Root não é suficiente. É a proteção que eu havia atribuído
+a um plugin nativo de semanas de trabalho; custa uma linha de configuração.
+
+Consequência de arquitetura: no Android o próprio storage dispara o `BiometricPrompt` ao ler
+a chave. O `local_auth` fica sendo usado **apenas no Windows**.
+
+**Windows — ligação lógica.** `WindowsOptions` expõe só `useBackwardCompatibility`; o
+armazenamento é DPAPI, protegido pela conta do Windows, com o `local_auth` (Hello) por cima.
+A ligação entre a autenticação e a chave é decidida pelo app, não imposta pelo SO. Malware
+rodando como o mesmo usuário consegue extrair a `quickKey`. É o modelo que Bitwarden e
+1Password usam no desktop, e não há alternativa em Dart puro.
+
+Essa assimetria é aceitável porque acompanha o risco: o celular é o que se perde e é
+roubado; o desktop fica numa sala.
 
 ## Componentes
 
@@ -86,13 +107,30 @@ Interface abstrata + implementação real, seguindo o padrão de
 `lib/state/vault_repository_factory.dart`. É a única fronteira que os testes falsificam, e
 o único lugar do app que conhece `local_auth` e `flutter_secure_storage`.
 
+```dart
+enum QuickKeyStatus { ok, cancelled, unavailable, missing }
+
+class QuickKeyResult {
+  final QuickKeyStatus status;
+  final Uint8List? key;   // preenchido apenas quando status == ok
+}
+
+abstract class QuickUnlockService {
+  Future<bool> isAvailable();
+  Future<QuickKeyStatus> saveKey(Uint8List quickKey, {required String reason});
+  Future<QuickKeyResult> readKey({required String reason});
+  Future<void> clearKey();
+}
 ```
-Future<bool> isAvailable()               // aparelho tem biometria/Hello utilizável
-Future<bool> authenticate(String reason) // dispara o prompt do SO
-Future<void> saveKey(Uint8List quickKey)
-Future<Uint8List?> readKey()             // null quando a chave não existe
-Future<void> clearKey()
-```
+
+O prompt de autenticação **não** é um método separado da interface, porque as duas
+plataformas o disparam em momentos diferentes: no Android o próprio Keystore o exige ao
+usar a chave (`setUserAuthenticationParameters(0, ...)`), enquanto no Windows o app precisa
+chamar o `local_auth` antes de tocar no DPAPI. Cada implementação resolve isso por dentro;
+quem chama só pede a chave e recebe um desfecho.
+
+`QuickKeyStatus` distingue o que a UI trata de formas diferentes — `cancelled` (usuário
+desistiu, não invalida nada) de `missing` (chave ausente ou destruída pelo SO, invalida).
 
 ### Schema v2 — `lib/services/database.dart`
 
@@ -137,12 +175,18 @@ plataforma não suporta — em ambos os casos nada é gravado e o toggle volta p
 
 ### Ativar (nas configurações, com o cofre aberto)
 
-1. Confirma com um prompt de biometria — não faz sentido confiar numa digital não testada.
+1. `isAvailable()` — sem tela de bloqueio configurada, para aqui com mensagem explicativa.
 2. Gera `quickKey` com o `Random.secure()` já existente em `CryptoService`.
 3. `wrapDek(dek, quickKey)`.
-4. Grava a `quickKey` no keystore.
+4. `saveKey(quickKey)` — **dispara o prompt do SO**. No Android porque o Keystore exige
+   autenticação para usar a chave recém-criada; no Windows porque a implementação chama o
+   `local_auth` antes de gravar. Se voltar `cancelled`, nada foi gravado e o toggle volta
+   para desligado.
 5. Grava blob e `agora + 7 dias` via `updateQuickUnlock`.
 6. Zera a `quickKey` da memória.
+
+O prompt no passo 4 é também a confirmação de que a biometria funciona — não faz sentido
+confiar num sensor que ainda não testamos.
 
 A ordem dos passos 4 e 5 importa. Keystore primeiro: se a escrita no banco falhar, sobra uma
 chave órfã no keystore — inofensiva, e sobrescrita na próxima tentativa. Na ordem inversa,
@@ -152,8 +196,8 @@ sobraria um blob no banco sem chave correspondente, e a próxima abertura cairia
 ### Entrar com biometria
 
 1. App abre; há blob e a data não venceu.
-2. Prompt do SO dispara automaticamente, **uma vez**.
-3. `readKey()` → `unwrapDek(blob, quickKey)`.
+2. `readKey()` — dispara o prompt do SO automaticamente, **uma vez**.
+3. `unwrapDek(blob, quickKey)`.
 4. DEK em memória, cofre aberto, timer de auto-lock iniciado, `quickKey` zerada.
 
 Sem senha, sem Authy.
@@ -174,12 +218,16 @@ ambíguo não pode virar acesso silencioso.
 **Invalida** — zera as duas colunas e chama `clearKey()`:
 
 - O usuário desativa nas configurações.
-- `readKey()` volta vazio: app reinstalado, keystore resetado, ou `vault.db` trazido de
-  outro aparelho.
+- `readKey()` devolve `missing`: app reinstalado, keystore resetado, `vault.db` trazido de
+  outro aparelho, ou — no Android — **uma digital nova foi cadastrada no aparelho**, e o
+  Keystore destruiu a chave por conta própria.
 - `unwrapDek` falha na tag GCM: chave trocada ou blob corrompido.
 
 Os dois últimos são o mesmo caso — a metade do dispositivo não bate com a metade do banco.
 Cai para o login completo com aviso claro, sem exceção propagando para a UI.
+
+O caso da digital nova é o único em que o SO invalida sozinho, sem o app pedir. Não é erro:
+é a proteção funcionando. A mensagem ao usuário reflete isso, em vez de sugerir defeito.
 
 **Não invalida** — apenas volta ao formulário completo:
 
@@ -191,15 +239,23 @@ Cai para o login completo com aviso claro, sem exceção propagando para a UI.
 
 ### Limitações conhecidas
 
-**Android:** cadastrar uma digital nova no aparelho **não** invalida a chave nesta
-abordagem. Quem tiver o aparelho desbloqueado e adicionar a própria digital passa a abrir o
-cofre. Só o backend nativo (`setInvalidatedByBiometricEnrollment`) resolve.
+**O PIN do aparelho abre o cofre — nas duas plataformas.** No Windows isso é imposto: o
+Hello aceita o PIN e o `local_auth` não permite recusá-lo. No Android é uma escolha
+deliberada (`biometricOrDeviceCredential`), trocando segurança por não ficar preso fora do
+cofre quando o sensor não lê o dedo. O efeito: quem souber o PIN do seu celular, ou o do seu
+Windows, entra sem a senha mestra.
 
-**Windows:** o Hello aceita o **PIN do Windows** como alternativa à digital, e o
-`local_auth` não permite bloquear isso na plataforma. Na prática, acesso rápido no Windows
-significa "digital ou o PIN daquela máquina". O PIN do Hello é preso ao TPM do aparelho —
-não é uma senha copiável — mas é diferente do que a palavra "biometria" sugere. A UI usa o
-rótulo "Windows Hello", não "digital", para não enganar.
+Os dois PINs são presos ao hardware (TEE no Android, TPM no Windows), então não são
+segredos copiáveis que vazam de um aparelho para outro. Mas são curtos e digitados em
+público. **Se isso incomodar, `AndroidBiometricType.strongBiometricOnly` fecha o lado
+Android** — uma linha, e a digital passa a ser o único caminho rápido lá.
+
+Por isso a UI não usa a palavra "digital" em lugar nenhum: os rótulos são "Entrar com
+digital ou PIN" no Android e "Entrar com Windows Hello" no Windows.
+
+**Windows não tem chave presa ao hardware.** Detalhado em *Escolha do backend*: lá a
+proteção é lógica, e malware rodando como seu usuário consegue extrair a `quickKey`. No
+Android, não.
 
 **Fora de escopo:** troca de senha mestra não existe no app hoje. Quando existir, decidir se
 invalida o acesso rápido — tecnicamente não precisa (o DEK não muda), mas quem troca a senha
@@ -227,9 +283,13 @@ tomada com o acesso rápido em vista.
 ### `UnlockScreen` — dois modos
 
 **Modo rápido** (padrão quando disponível): mantém logo e título; no lugar dos dois campos,
-um botão grande com ícone de digital — *"Entrar com digital"* no Android, *"Entrar com
-Windows Hello"* no Windows — e abaixo um link discreto *"Usar senha mestra"* que revela o
-formulário atual.
+um botão grande com ícone de digital — *"Entrar com digital ou PIN"* no Android, *"Entrar
+com Windows Hello"* no Windows — e abaixo um link discreto *"Usar senha mestra"* que revela
+o formulário atual.
+
+Os rótulos evitam a palavra "digital" sozinha de propósito: nas duas plataformas o PIN do
+aparelho também abre o cofre, e prometer só biometria seria mentir sobre o que protege o
+cofre.
 
 O prompt do SO dispara sozinho ao abrir a tela, uma vez. Cancelou, o botão fica disponível
 para nova tentativa — sem reabrir em loop.
@@ -249,10 +309,13 @@ Toggle "Acesso rápido", com subtítulo refletindo o estado real. O texto do est
 muda por plataforma, pela mesma razão do rótulo da `UnlockScreen` — no Windows o fator pode
 ser o PIN do Hello, e chamá-lo de digital seria enganoso:
 
-- desligado, Android → "Use sua digital para abrir o cofre sem a senha mestra"
+- desligado, Android → "Use sua digital ou o PIN do aparelho para abrir o cofre sem a senha mestra"
 - desligado, Windows → "Use o Windows Hello para abrir o cofre sem a senha mestra"
 - ligado → "Ativo. Senha mestra será pedida em 29/07" (data real de `quick_expires_at`)
 - plataforma sem suporte → o item não aparece
+- Android sem tela de bloqueio → item visível mas desabilitado, com "Configure uma digital ou
+  PIN no aparelho para usar o acesso rápido" — aqui explicar é melhor que esconder, porque o
+  usuário consegue resolver
 
 ## Testes
 
@@ -260,23 +323,36 @@ Com `FakeQuickUnlockService` em memória, sem tocar em hardware. Estende
 `test/session_provider_test.dart` e `test/migration_test.dart`.
 
 1. Ativar → travar → entrar com biometria devolve **o mesmo DEK**.
-2. Biometria negada → `isUnlocked` continua falso e o DEK não vaza.
-3. Chave ausente no keystore → colunas zeradas, desfecho `invalidated`, sem exceção.
-4. Blob corrompido → mesmo tratamento.
+2. Biometria negada (`cancelled`) → `isUnlocked` continua falso, DEK não vaza e o acesso
+   rápido **continua ativo** (falha acidental não custa reconfiguração).
+3. Chave ausente (`missing`) → colunas zeradas, desfecho `invalidated`, sem exceção.
+4. Blob corrompido → mesmo tratamento do caso 3.
 5. Janela vencida (data gravada no passado direto no banco) → desfecho `expired`, exige
-   login completo.
+   login completo, e o blob **não** é apagado.
 6. Login completo com acesso rápido ativo → renova para +7 dias.
 7. Desativar → colunas nulas e `clearKey()` chamado.
-8. Migração v1→v2 preserva credenciais existentes.
+8. Ativar com `saveKey` devolvendo `cancelled` → nada gravado no banco, acesso rápido segue
+   desligado (cobre a ordem keystore-antes-do-banco).
+9. Ativar com `isAvailable() == false` → recusa sem gravar nada.
+10. Migração v1→v2 preserva credenciais existentes.
 
 O teste 5 grava `quick_expires_at` diretamente no banco em vez de injetar um relógio — evita
 adicionar injeção de tempo ao código de produção só para teste.
 
 ## Riscos de implementação
 
-**minSdk — resolvido, sem ação.** `local_auth` e `flutter_secure_storage` exigem API 23. O
-projeto usa `flutter.minSdkVersion`, que no Flutter estável instalado vale **24**
-(`FlutterExtension.kt:26`). Nada a mexer no Gradle e nada muda no workflow de APK.
+**minSdk 24 → 28.** `AndroidOptions.biometric` requer API 28 (o `setUnlockedDeviceRequired`
+e o StrongBox são 28+). O projeto herda `flutter.minSdkVersion` = 24
+(`FlutterExtension.kt:26`), então `android/app/build.gradle.kts` passa a fixar `minSdk = 28`
+explicitamente em vez de herdar. Aparelhos com Android 8 ou anterior deixam de instalar o
+app — decisão tomada com isso em vista.
+
+**Chave invalidada pelo SO é um caminho normal, não um erro.** Com
+`setInvalidatedByBiometricEnrollment(true)`, cadastrar uma digital nova destrói a chave e a
+leitura seguinte falha. O `flutter_secure_storage` usa `resetOnError: true` por padrão, que
+limpa o storage nesse caso — comportamento desejado aqui, já que só guardamos a `quickKey`.
+A implementação deve traduzir isso para `QuickKeyStatus.missing`, e o app para o desfecho
+`invalidated`, sem exceção chegando à UI.
 
 **`local_auth` no Windows.** O suporte vem do pacote federado `local_auth_windows`
 (`UserConsentVerifier`). Confirmar que está incluído por padrão na versão escolhida de
