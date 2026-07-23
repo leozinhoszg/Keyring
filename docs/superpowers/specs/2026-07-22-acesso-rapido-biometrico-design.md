@@ -49,6 +49,14 @@ contém nada utilizável em outro aparelho. O keystore sem o banco também não.
 acesso rápido é um `UPDATE` de uma linha, e funciona mesmo se o keystore estiver
 inacessível.
 
+> **Pré-requisito, já satisfeito na 1.0.2.** Essa separação depende de as duas metades não
+> saírem juntas do aparelho. Até a 1.0.1, o `allowBackup` implícito mandava todo o diretório
+> de dados do app para o Google Drive — o que teria incluído **tanto** o `vault.db` **quanto**
+> o EncryptedSharedPreferences onde o `flutter_secure_storage` guarda a `quickKey`. As duas
+> metades, no mesmo backup, na mesma conta. A correção da 1.0.2 (`allowBackup="false"` +
+> `data_extraction_rules.xml`) é o que torna este design válido; se ela for revertida, o
+> acesso rápido passa a ser um passivo em vez de uma conveniência.
+
 A alternativa avaliada e recusada foi guardar o DEK direto no keystore: economiza a
 migração de schema, mas expõe o DEK cru ao storage do SO e perde a separação
 banco/dispositivo.
