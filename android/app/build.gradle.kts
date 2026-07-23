@@ -55,7 +55,10 @@ android {
         applicationId = "com.proma.keyring"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // 28 (Android 9) é o piso do AndroidOptions.biometric do flutter_secure_storage:
+        // setUnlockedDeviceRequired e StrongBox exigem API 28. Fixo, não herdado de
+        // flutter.minSdkVersion (hoje 24), para o piso não cair numa atualização do Flutter.
+        minSdk = 28
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
