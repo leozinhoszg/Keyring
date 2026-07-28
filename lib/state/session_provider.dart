@@ -19,6 +19,24 @@ class SetupResult {
   const SetupResult({required this.totpSecret, required this.keyUri, required this.recoveryCodes});
 }
 
+/// Desfecho de uma tentativa de abrir o cofre pela biometria. A UI trata cada
+/// um de um jeito — ver a tabela de mensagens na spec.
+enum QuickUnlockOutcome {
+  success,
+
+  /// Usuário cancelou ou a biometria não foi reconhecida. Nada muda.
+  cancelled,
+
+  /// Acesso rápido não configurado, ou aparelho sem suporte.
+  unavailable,
+
+  /// Passaram-se mais de 7 dias do último login completo.
+  expired,
+
+  /// A metade do dispositivo não bate com a do banco. Acesso rápido desligado.
+  invalidated,
+}
+
 class SessionProvider extends ChangeNotifier {
   final VaultRepository _repo;
   final CryptoService _crypto;
@@ -154,6 +172,15 @@ class SessionProvider extends ChangeNotifier {
     if (!_totp.verify(totpToken, secret)) return false;
     _dek = dek;
     _settings = VaultSettings.fromJson(jsonDecode(meta.settings) as Map<String, dynamic>);
+
+    // A janela dos 7 dias conta do último login completo — e só dele.
+    if (meta.wrappedDekQuick != null) {
+      final expires = DateTime.now().add(quickUnlockWindow);
+      await _repo.updateQuickUnlock(meta.wrappedDekQuick, expires.toIso8601String());
+      _quickWrapped = meta.wrappedDekQuick;
+      _quickExpiresAt = expires;
+    }
+
     _startTimer();
     notifyListeners();
     return true;
@@ -190,6 +217,53 @@ class SessionProvider extends ChangeNotifier {
   Future<void> disableQuickUnlock() async {
     await _forgetQuickUnlock();
     notifyListeners();
+  }
+
+  /// Abre o cofre pela biometria do aparelho, sem senha mestra nem TOTP.
+  Future<QuickUnlockOutcome> unlockWithBiometrics() async {
+    final meta = await _repo.loadVaultMeta();
+    final blob = meta?.wrappedDekQuick;
+    final iso = meta?.quickExpiresAt;
+    if (meta == null || blob == null || iso == null) return QuickUnlockOutcome.unavailable;
+
+    final expires = DateTime.tryParse(iso);
+    if (expires == null || !expires.isAfter(DateTime.now())) {
+      // Vencido não é inválido: o blob continua bom e o login completo o renova.
+      return QuickUnlockOutcome.expired;
+    }
+
+    final read = await _quick.readKey(reason: 'Desbloquear o cofre Keyring');
+    switch (read.status) {
+      case QuickKeyStatus.cancelled:
+        return QuickUnlockOutcome.cancelled;
+      case QuickKeyStatus.unavailable:
+        return QuickUnlockOutcome.unavailable;
+      case QuickKeyStatus.missing:
+        await _forgetQuickUnlock();
+        notifyListeners();
+        return QuickUnlockOutcome.invalidated;
+      case QuickKeyStatus.ok:
+        break;
+    }
+
+    final quickKey = read.key!;
+    Uint8List dek;
+    try {
+      dek = await _crypto.unwrapDek(blob, quickKey);
+    } catch (_) {
+      // As duas metades não combinam — banco de outro aparelho, ou blob corrompido.
+      await _forgetQuickUnlock();
+      notifyListeners();
+      return QuickUnlockOutcome.invalidated;
+    } finally {
+      quickKey.fillRange(0, quickKey.length, 0);
+    }
+
+    _dek = dek;
+    _settings = VaultSettings.fromJson(jsonDecode(meta.settings) as Map<String, dynamic>);
+    _startTimer();
+    notifyListeners();
+    return QuickUnlockOutcome.success;
   }
 
   /// Apaga as duas metades. Não notifica — quem chama decide quando.

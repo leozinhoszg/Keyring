@@ -136,4 +136,108 @@ void main() {
     expect(quick.stored, isNull);
     expect(quick.clearCalls, 1);
   });
+
+  test('desbloqueia com biometria e devolve o MESMO DEK', () async {
+    final s = await fresh();
+    final res = await s.setup('senha-mestra');
+    await s.confirmSetup(TotpService().currentCode(res.totpSecret));
+    final dekAntes = Uint8List.fromList(s.dek!);
+    await s.enableQuickUnlock();
+    s.lock();
+
+    expect(await s.unlockWithBiometrics(), QuickUnlockOutcome.success);
+    expect(s.isUnlocked, isTrue);
+    expect(s.dek, dekAntes, reason: 'o cofre so abre com o DEK original');
+  });
+
+  test('biometria cancelada nao abre nem desativa o acesso rapido', () async {
+    final s = await fresh();
+    final res = await s.setup('senha-mestra');
+    await s.confirmSetup(TotpService().currentCode(res.totpSecret));
+    await s.enableQuickUnlock();
+    s.lock();
+
+    quick.nextReadStatus = QuickKeyStatus.cancelled;
+    expect(await s.unlockWithBiometrics(), QuickUnlockOutcome.cancelled);
+    expect(s.isUnlocked, isFalse);
+    expect(s.dek, isNull);
+    expect(s.quickUnlockEnabled, isTrue,
+        reason: 'falha acidental nao pode custar a reconfiguracao');
+  });
+
+  test('chave sumida do keystore invalida e cai para o login completo', () async {
+    final s = await fresh();
+    final res = await s.setup('senha-mestra');
+    await s.confirmSetup(TotpService().currentCode(res.totpSecret));
+    await s.enableQuickUnlock();
+    s.lock();
+
+    quick.stored = null; // app reinstalado, ou digital nova cadastrada no Android
+    expect(await s.unlockWithBiometrics(), QuickUnlockOutcome.invalidated);
+    expect(s.isUnlocked, isFalse);
+    expect(s.quickUnlockEnabled, isFalse);
+  });
+
+  test('chave trocada (blob nao decifra) invalida', () async {
+    final s = await fresh();
+    final res = await s.setup('senha-mestra');
+    await s.confirmSetup(TotpService().currentCode(res.totpSecret));
+    await s.enableQuickUnlock();
+    s.lock();
+
+    quick.stored = CryptoService().generateQuickKey(); // outra chave qualquer
+    expect(await s.unlockWithBiometrics(), QuickUnlockOutcome.invalidated);
+    expect(s.isUnlocked, isFalse);
+    expect(s.quickUnlockEnabled, isFalse);
+  });
+
+  test('janela vencida exige login completo e preserva o blob', () async {
+    final s = await fresh();
+    final res = await s.setup('senha-mestra');
+    await s.confirmSetup(TotpService().currentCode(res.totpSecret));
+    await s.enableQuickUnlock();
+
+    // envelhece a janela direto no banco, sem injetar relogio na producao
+    await s.debugRepository.updateQuickUnlock(
+      (await s.debugRepository.loadVaultMeta())!.wrappedDekQuick,
+      DateTime.now().subtract(const Duration(days: 1)).toIso8601String(),
+    );
+    await s.refreshStatus();
+    s.lock();
+
+    expect(await s.unlockWithBiometrics(), QuickUnlockOutcome.expired);
+    expect(s.isUnlocked, isFalse);
+    expect(s.quickUnlockEnabled, isTrue, reason: 'o blob continua valido');
+    expect(quick.readCalls, 0, reason: 'nem chega a pedir a digital');
+  });
+
+  test('login completo renova a janela de 7 dias', () async {
+    final s = await fresh();
+    final res = await s.setup('senha-mestra');
+    await s.confirmSetup(TotpService().currentCode(res.totpSecret));
+    await s.enableQuickUnlock();
+
+    await s.debugRepository.updateQuickUnlock(
+      (await s.debugRepository.loadVaultMeta())!.wrappedDekQuick,
+      DateTime.now().subtract(const Duration(days: 1)).toIso8601String(),
+    );
+    await s.refreshStatus();
+    s.lock();
+
+    expect(await s.unlock('senha-mestra', TotpService().currentCode(res.totpSecret)), isTrue);
+    expect(s.quickUnlockExpiresAt!.isAfter(DateTime.now().add(const Duration(days: 6))), isTrue);
+
+    // e a renovação foi realmente persistida, não só refletida em memória
+    final meta = await s.debugRepository.loadVaultMeta();
+    expect(DateTime.parse(meta!.quickExpiresAt!).isAfter(DateTime.now().add(const Duration(days: 6))),
+        isTrue);
+  });
+
+  test('sem acesso rapido configurado devolve unavailable', () async {
+    final s = await fresh();
+    final res = await s.setup('senha-mestra');
+    await s.confirmSetup(TotpService().currentCode(res.totpSecret));
+    s.lock();
+    expect(await s.unlockWithBiometrics(), QuickUnlockOutcome.unavailable);
+  });
 }
