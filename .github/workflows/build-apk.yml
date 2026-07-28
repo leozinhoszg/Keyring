@@ -1,8 +1,13 @@
-name: Build APK
+name: Build release
 
-# Builda o APK Android na nuvem (Ubuntu limpo) — sem depender da máquina local
-# nem de antivírus. Disparo manual (Actions → Run workflow) ou automático ao criar
-# uma tag "v*". O APK sai como artefato de download e, quando há tag, anexado ao release.
+# Builda os artefatos de release na nuvem, em runners limpos — sem depender da
+# máquina local nem de antivírus. Disparo manual (Actions → Run workflow) ou
+# automático ao criar uma tag "v*".
+#
+#   build-apk     — APK Android (Ubuntu). Cria o release com as notas do CHANGELOG.
+#   build-windows — .zip do Windows x64. Anexa ao release que o build-apk criou.
+#
+# Cada um também publica seu artefato de download avulso, mesmo sem tag.
 
 on:
   workflow_dispatch:
@@ -123,3 +128,56 @@ jobs:
               --title "Keyring ${VERSION}" --generate-notes
             echo "Release ${TAG} criado com notas geradas automaticamente."
           fi
+
+  build-windows:
+    # Depois do build-apk, que é quem cria o release. Assim o Windows só anexa,
+    # e não há dois jobs disputando a criação do mesmo release.
+    needs: build-apk
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter --version
+      - run: flutter pub get
+
+      # O runner windows-latest já traz o Visual Studio 2022 com o componente ATL,
+      # exigido pelo flutter_secure_storage_windows. A macro de coroutine em
+      # windows/CMakeLists.txt cobre o MSVC novo, então o build é limpo aqui.
+      - name: Build do Windows
+        run: flutter build windows --release
+
+      - name: Empacotar o .zip
+        shell: bash
+        run: |
+          VER=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          ZIP="keyring-${VER}-windows-x64.zip"
+          powershell -Command "Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath '${ZIP}' -Force"
+          echo "ZIP=${ZIP}" >> "$GITHUB_ENV"
+
+      - name: Publicar como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyring-windows
+          path: ${{ env.ZIP }}
+
+      - name: Anexar ao release (quando houver tag)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ] && [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "Sem tag informada — zip disponível apenas como artefato."
+            exit 0
+          fi
+          gh release upload "$TAG" "${ZIP}" --clobber -R "${GITHUB_REPOSITORY}"
+          echo "Zip do Windows anexado ao release ${TAG}."
