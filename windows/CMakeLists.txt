@@ -32,6 +32,13 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# O MSVC do Visual Studio 2026 (14.51+) transforma o uso de <experimental/coroutine>
+# em erro rígido (STL1011). O plugin local_auth_windows 2.0.1 ainda inclui esse
+# header e não migrou para o <coroutine> do C++20. Enquanto não migra, esta macro
+# reverte o erro para permitir a compilação — precisa vir ANTES dos add_subdirectory
+# dos plugins para ser herdada por eles.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
