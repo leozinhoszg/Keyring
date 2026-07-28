@@ -21,6 +21,11 @@ class CryptoService {
   Uint8List randomSalt() => _randomBytes(16);
   Uint8List generateDek() => _randomBytes(32);
 
+  /// Chave que envolve o DEK para o acesso rápido. Mesmo tamanho e mesma fonte
+  /// do DEK; nomeada à parte porque o ciclo de vida é outro — esta vive no
+  /// keystore do SO e é revogada sem tocar no cofre.
+  Uint8List generateQuickKey() => _randomBytes(32);
+
   Future<Uint8List> deriveKek(String password, Uint8List salt, Argon2Params p) async {
     final digest = hashlib.Argon2(
       salt: salt,
