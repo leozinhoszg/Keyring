@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release para anexar o APK (ex.: v1.0.2). Vazio = só artefato.'
+        description: 'Release para anexar o APK (ex.: v1.1.0). Vazio = só artefato.'
         required: false
-        default: 'v1.0.2'
+        default: 'v1.1.0'
   push:
     tags: ['v*']
 
@@ -85,7 +85,7 @@ jobs:
           name: keyring-apk
           path: ${{ env.APK }}
 
-      - name: Anexar ao release (quando houver tag)
+      - name: Publicar release com as notas do CHANGELOG (quando houver tag)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -93,9 +93,33 @@ jobs:
           if [ -z "$TAG" ] && [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
             TAG="${GITHUB_REF#refs/tags/}"
           fi
-          if [ -n "$TAG" ]; then
-            gh release upload "$TAG" "${APK}" --clobber -R "${GITHUB_REPOSITORY}"
-            echo "APK anexado ao release ${TAG}"
-          else
+          if [ -z "$TAG" ]; then
             echo "Sem tag informada — APK disponível apenas como artefato."
+            exit 0
+          fi
+
+          # Extrai do CHANGELOG a seção da versão da tag (## [X.Y.Z] ... até o próximo ## [).
+          # Casamento literal com index() — regex com \[ vira character-class no gawk.
+          VERSION="${TAG#v}"
+          awk -v hdr="## [${VERSION}]" '
+            index($0, hdr) == 1 {p=1; print; next}
+            p && index($0, "## [") == 1 {exit}
+            p {print}
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Sem seção no CHANGELOG para ${VERSION} — usando notas geradas pelo GitHub." >&2
+          fi
+
+          # Cria o release se ainda não existir; senão, só reanexa o APK.
+          if gh release view "$TAG" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${APK}" --clobber -R "${GITHUB_REPOSITORY}"
+            echo "APK reanexado ao release ${TAG}."
+          elif [ -s release-notes.md ]; then
+            gh release create "$TAG" "${APK}" -R "${GITHUB_REPOSITORY}" \
+              --title "Keyring ${VERSION}" --notes-file release-notes.md
+            echo "Release ${TAG} criado com as notas do CHANGELOG."
+          else
+            gh release create "$TAG" "${APK}" -R "${GITHUB_REPOSITORY}" \
+              --title "Keyring ${VERSION}" --generate-notes
+            echo "Release ${TAG} criado com notas geradas automaticamente."
           fi
