@@ -5,6 +5,40 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/) e o versio
 
 ## [Não lançado]
 
+## [1.1.0] — 2026-07-22
+
+### Adicionado
+
+- **Acesso rápido por biometria.** Abrir o cofre passa a exigir só a digital
+  (ou o Windows Hello, no desktop), em vez de senha mestra + código do Authy. A
+  senha mestra continua sendo pedida a cada 7 dias, e o código do Authy só junto
+  dela. O auto-lock de 5 minutos, que antes custava os dois fatores, agora custa
+  um toque.
+
+  A chave que abre o cofre fica dividida: metade no cofre de credenciais do
+  sistema, metade no `vault.db`. Nenhuma serve sozinha — copiar o `vault.db`
+  para outro aparelho não leva o acesso rápido junto.
+
+  No Android a chave é gerada **dentro do Keystore**, presa ao hardware: nunca
+  sai do chip, exige autenticação a cada uso e é **destruída automaticamente se
+  uma digital nova for cadastrada** no aparelho. No Windows a proteção é do
+  Hello sobre o DPAPI, sem equivalente preso ao hardware.
+
+  Ativar em Configurações → Segurança → Acesso rápido.
+
+### Alterado
+
+- **Android 9 (API 28) passa a ser o mínimo**, contra Android 7 antes. É o piso
+  da chave biométrica presa ao hardware; abaixo disso o acesso rápido seria
+  apenas uma conveniência sem proteção real.
+
+### Segurança
+
+- O PIN/padrão do aparelho é aceito como alternativa à digital, nas duas
+  plataformas. Quem souber o PIN do seu celular ou do seu Windows abre o cofre
+  sem a senha mestra — trade-off escolhido para não trancar você fora quando o
+  sensor não lê o dedo.
+
 ## [1.0.2] — 2026-07-22
 
 > **Atualização manual, uma vez só.** Este APK é assinado com uma chave nova e **não instala
@@ -74,6 +108,7 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/) e o versio
 - **Backup criptografado** (`.vault`), auto-lock e limpeza automática do clipboard.
 - Identidade visual **"Steel & Gold"**.
 
+[1.1.0]: https://github.com/leozinhoszg/Keyring/releases/tag/v1.1.0
 [1.0.2]: https://github.com/leozinhoszg/Keyring/releases/tag/v1.0.2
 [1.0.1]: https://github.com/leozinhoszg/Keyring/releases/tag/v1.0.1
 [1.0.0]: https://github.com/leozinhoszg/Keyring/releases/tag/v1.0.0
