@@ -87,12 +87,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _toggleQuickUnlock(bool enable) async {
+    final session = context.read<SessionProvider>();
+    if (!enable) {
+      await session.disableQuickUnlock();
+      if (mounted) _toast('Acesso rápido desativado.');
+      return;
+    }
+    final ok = await session.enableQuickUnlock();
+    if (!mounted) return;
+    _toast(ok
+        ? 'Acesso rápido ativado.'
+        : 'Não foi possível ativar — a autenticação foi cancelada ou o aparelho não suporta.');
+  }
+
+  String _quickSubtitle(SessionProvider session) {
+    if (!session.quickUnlockAvailable) {
+      return 'Configure uma digital ou PIN no aparelho para usar o acesso rápido';
+    }
+    final expires = session.quickUnlockExpiresAt;
+    if (session.quickUnlockEnabled && expires != null) {
+      final d = expires.day.toString().padLeft(2, '0');
+      final m = expires.month.toString().padLeft(2, '0');
+      return 'Ativo. Senha mestra será pedida em $d/$m';
+    }
+    return Platform.isWindows
+        ? 'Use o Windows Hello para abrir o cofre sem a senha mestra'
+        : 'Use sua digital ou o PIN do aparelho para abrir o cofre sem a senha mestra';
+  }
+
   void _toast(String m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
   @override
   Widget build(BuildContext context) {
     final vault = context.watch<VaultProvider>();
-    final settings = context.read<SessionProvider>().settings;
+    final session = context.watch<SessionProvider>();
+    final settings = session.settings;
     return ListView(children: [
       const Text('Configurações', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
       const SizedBox(height: 16),
@@ -129,6 +159,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const Text('Segurança', style: TextStyle(fontWeight: FontWeight.w600)),
             Text('Auto-lock após ${settings.autoLockMinutes} min de inatividade.'),
             Text('Clipboard limpo ${settings.clipboardClearSeconds}s após copiar.'),
+            const Divider(height: 20),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Acesso rápido'),
+              subtitle: Text(_quickSubtitle(session)),
+              value: session.quickUnlockEnabled,
+              onChanged: session.quickUnlockAvailable ? _toggleQuickUnlock : null,
+            ),
           ]),
         ),
       ),

@@ -8,6 +8,7 @@ import 'screens/setup_screen.dart';
 import 'screens/unlock_screen.dart';
 import 'services/crypto_service.dart';
 import 'services/database.dart';
+import 'services/quick_unlock_platform.dart';
 import 'services/totp_service.dart';
 import 'state/session_provider.dart';
 import 'state/vault_provider.dart';
@@ -19,7 +20,8 @@ Future<void> main() async {
   final db = await openKeyringDatabase();
   final repo = createVaultRepository(db);
   final crypto = CryptoService();
-  final session = SessionProvider(repo, crypto, TotpService(), const Argon2Params());
+  final session = SessionProvider(
+      repo, crypto, TotpService(), const Argon2Params(), PlatformQuickUnlockService());
   await session.refreshStatus();
   final vault = VaultProvider(repo, crypto, () => session.dek);
 

@@ -16,6 +16,16 @@ class VaultMetaRow {
   final String recoveryCodesHash;
   final String settings;
   final String createdAt;
+
+  /// DEK envolvido pela chave de acesso rápido guardada no keystore do SO.
+  /// Nulo = acesso rápido desligado. Sozinho, é inútil: sem a metade que mora
+  /// no keystore daquele aparelho, não abre nada.
+  final Uint8List? wrappedDekQuick;
+
+  /// Vencimento da janela de acesso rápido (ISO-8601). Renovado a cada login
+  /// completo; nunca estendido por usar a biometria.
+  final String? quickExpiresAt;
+
   const VaultMetaRow({
     required this.argon2Salt,
     required this.argon2Params,
@@ -24,6 +34,8 @@ class VaultMetaRow {
     required this.recoveryCodesHash,
     required this.settings,
     required this.createdAt,
+    this.wrappedDekQuick,
+    this.quickExpiresAt,
   });
 }
 
@@ -128,6 +140,10 @@ abstract class VaultRepository {
   Future<void> saveVaultMeta(VaultMetaRow row);
   Future<VaultMetaRow?> loadVaultMeta();
 
+  /// Escreve apenas as colunas do acesso rápido. Passar `(null, null)` desliga.
+  /// Separado de [saveVaultMeta] de propósito: aquele reescreve a meta inteira.
+  Future<void> updateQuickUnlock(Uint8List? wrapped, String? expiresAt);
+
   Future<void> createCredential(CredentialRow row, List<String> tagIds);
   Future<void> updateCredential(CredentialRow row, List<String> tagIds);
   Future<void> deleteCredential(String id);
@@ -157,7 +173,8 @@ Future<void> createSchema(Database db) async {
   await db.execute('''CREATE TABLE IF NOT EXISTS vault_meta (
     id INTEGER PRIMARY KEY CHECK (id = 1), argon2_salt BLOB NOT NULL, argon2_params TEXT NOT NULL,
     wrapped_dek BLOB NOT NULL, totp_secret_enc BLOB NOT NULL, recovery_codes_hash TEXT NOT NULL,
-    settings TEXT NOT NULL, created_at TEXT NOT NULL)''');
+    settings TEXT NOT NULL, created_at TEXT NOT NULL,
+    wrapped_dek_quick BLOB, quick_expires_at TEXT)''');
   await db.execute('''CREATE TABLE IF NOT EXISTS credentials (
     id TEXT PRIMARY KEY, title_enc BLOB NOT NULL, username_enc BLOB, password_enc BLOB, url_enc BLOB,
     notes_enc BLOB, project_enc BLOB, is_favorite INTEGER NOT NULL DEFAULT 0, strength_score INTEGER,
@@ -172,4 +189,16 @@ Future<void> createSchema(Database db) async {
   await db.execute('''CREATE TABLE IF NOT EXISTS server_commands (
     id TEXT PRIMARY KEY, server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     label_enc BLOB NOT NULL, command_enc BLOB NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0)''');
+}
+
+/// Migrações incrementais entre versões de schema. Cada degrau preserva os dados:
+/// apenas ADD/ALTER/CREATE, nunca DROP/DELETE.
+///
+/// Pública para que `test/migration_test.dart` exercite a migração real do app,
+/// em vez de uma imitação que só testaria o sqflite.
+Future<void> migrateVault(Database db, int oldVersion, int newVersion) async {
+  if (oldVersion < 2) {
+    await db.execute('ALTER TABLE vault_meta ADD COLUMN wrapped_dek_quick BLOB');
+    await db.execute('ALTER TABLE vault_meta ADD COLUMN quick_expires_at TEXT');
+  }
 }
