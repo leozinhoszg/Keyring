@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
 import 'models/argon2_params.dart';
+import 'screens/boot_error_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/setup_screen.dart';
 import 'screens/unlock_screen.dart';
@@ -17,21 +18,28 @@ import 'theme/proma_palette.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final db = await openKeyringDatabase();
-  final repo = createVaultRepository(db);
-  final crypto = CryptoService();
-  final session = SessionProvider(
-      repo, crypto, TotpService(), const Argon2Params(), PlatformQuickUnlockService());
-  await session.refreshStatus();
-  final vault = VaultProvider(repo, crypto, () => session.dek);
+  // Uma exceção antes do runApp deixaria o processo vivo sem janela — o runner
+  // nativo só exibe a janela no primeiro frame. Aconteça o que acontecer no
+  // bootstrap, algo precisa ser renderizado.
+  try {
+    final db = await openKeyringDatabase();
+    final repo = createVaultRepository(db);
+    final crypto = CryptoService();
+    final session = SessionProvider(
+        repo, crypto, TotpService(), const Argon2Params(), PlatformQuickUnlockService());
+    await session.refreshStatus();
+    final vault = VaultProvider(repo, crypto, () => session.dek);
 
-  runApp(MultiProvider(
-    providers: [
-      ChangeNotifierProvider.value(value: session),
-      ChangeNotifierProvider.value(value: vault),
-    ],
-    child: const KeyringApp(),
-  ));
+    runApp(MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: session),
+        ChangeNotifierProvider.value(value: vault),
+      ],
+      child: const KeyringApp(),
+    ));
+  } catch (e, s) {
+    runApp(BootErrorApp(error: '$e', stack: '$s'));
+  }
 }
 
 class KeyringApp extends StatelessWidget {

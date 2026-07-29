@@ -59,4 +59,43 @@ void main() {
     await db2.close();
     await dir.delete(recursive: true);
   });
+
+  test('migração v1→v2 é idempotente quando o banco v1 já tem as colunas do acesso rápido',
+      () async {
+    // Reproduz um banco criado por build de desenvolvimento da biometria:
+    // user_version = 1, mas o CREATE TABLE já incluía as colunas quick.
+    final dir = await Directory.systemTemp.createTemp('keyring_mig_hib');
+    final dbPath = p.join(dir.path, 'vault.db');
+
+    final db1 = await databaseFactoryFfi.openDatabase(
+      dbPath,
+      options: OpenDatabaseOptions(version: 1, onCreate: (db, _) => createSchema(db)),
+    );
+    await db1.insert('credentials', {
+      'id': 'c1',
+      'title_enc': Uint8List.fromList([1, 2, 3]),
+      'is_favorite': 0,
+      'created_at': 'now',
+      'updated_at': 'now',
+    });
+    await db1.close();
+
+    final db2 = await databaseFactoryFfi.openDatabase(
+      dbPath,
+      options: OpenDatabaseOptions(
+        version: 2,
+        onCreate: (db, _) => createSchema(db),
+        onUpgrade: migrateVault,
+      ),
+    );
+
+    final rows = await db2.query('credentials');
+    expect(rows.length, 1, reason: 'a credencial deve sobreviver à migração');
+
+    final version = await db2.rawQuery('PRAGMA user_version');
+    expect(version.first.values.first, 2, reason: 'o banco deve ficar gravado como v2');
+
+    await db2.close();
+    await dir.delete(recursive: true);
+  });
 }

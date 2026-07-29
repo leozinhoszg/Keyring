@@ -198,7 +198,17 @@ Future<void> createSchema(Database db) async {
 /// em vez de uma imitação que só testaria o sqflite.
 Future<void> migrateVault(Database db, int oldVersion, int newVersion) async {
   if (oldVersion < 2) {
-    await db.execute('ALTER TABLE vault_meta ADD COLUMN wrapped_dek_quick BLOB');
-    await db.execute('ALTER TABLE vault_meta ADD COLUMN quick_expires_at TEXT');
+    // Bancos criados por builds de desenvolvimento da v1.1.0 ficaram em
+    // user_version = 1 mas já com as colunas do acesso rápido — o ALTER
+    // incondicional quebrava a abertura com "duplicate column name".
+    final existing = (await db.rawQuery('PRAGMA table_info(vault_meta)'))
+        .map((c) => c['name'] as String)
+        .toSet();
+    if (!existing.contains('wrapped_dek_quick')) {
+      await db.execute('ALTER TABLE vault_meta ADD COLUMN wrapped_dek_quick BLOB');
+    }
+    if (!existing.contains('quick_expires_at')) {
+      await db.execute('ALTER TABLE vault_meta ADD COLUMN quick_expires_at TEXT');
+    }
   }
 }
