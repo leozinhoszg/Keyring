@@ -5,6 +5,23 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/) e o versio
 
 ## [Não lançado]
 
+## [1.1.1] — 2026-07-29
+
+### Corrigido
+
+- **App abria sem janela em bancos criados durante o desenvolvimento da 1.1.0.**
+  Vaults gravados como schema v1 mas que já tinham as colunas do acesso rápido
+  faziam a migração v1→v2 falhar com "duplicate column name" — a exceção
+  acontecia antes do primeiro frame e o processo ficava vivo com a janela
+  invisível. A migração agora verifica quais colunas existem antes de criá-las,
+  e é coberta por teste que reproduz exatamente esse banco híbrido. Nenhum dado
+  é afetado: o backup automático `.bak` continua sendo feito antes de migrar.
+
+- **Falha na inicialização nunca mais é invisível.** Qualquer erro no bootstrap
+  (banco corrompido, migração, disco) agora renderiza uma tela com a causa, o
+  aviso de que o vault não foi alterado e um botão para copiar os detalhes —
+  em vez de deixar o processo rodando sem janela alguma.
+
 ## [1.1.0] — 2026-07-22
 
 ### Adicionado
