@@ -50,7 +50,11 @@ class _ServerFormState extends State<_ServerForm> {
   }
 
   Future<void> _save() async {
-    if (_name.text.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    if (_name.text.trim().isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('Informe um nome')));
+      return;
+    }
     final v = context.read<VaultProvider>();
     final navigator = Navigator.of(context);
     final input = ServerInput(
@@ -61,10 +65,19 @@ class _ServerFormState extends State<_ServerForm> {
       notes: _notes.text,
       isFavorite: _favorite,
     );
-    if (widget.server == null) {
-      await v.createServer(input);
-    } else {
-      await v.updateServer(widget.server!.id, input);
+    try {
+      if (widget.server == null) {
+        await v.createServer(input);
+      } else {
+        await v.updateServer(widget.server!.id, input);
+      }
+    } on StateError {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('O cofre foi bloqueado por inatividade. Desbloqueie e salve de novo.')));
+      return;
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Não foi possível salvar: $e')));
+      return;
     }
     navigator.pop(true);
   }

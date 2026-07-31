@@ -136,6 +136,12 @@ class CommandRow {
 }
 
 abstract class VaultRepository {
+  /// Executa [action] atomicamente: ou tudo é gravado, ou nada. Reentrante —
+  /// chamar de dentro de outra transação reaproveita a que já está aberta, o
+  /// que permite compor operações (o import roda `createCredential`, que também
+  /// é transacional, sem abrir uma segunda).
+  Future<T> transaction<T>(Future<T> Function() action);
+
   Future<bool> isSetup();
   Future<void> saveVaultMeta(VaultMetaRow row);
   Future<VaultMetaRow?> loadVaultMeta();
@@ -164,6 +170,21 @@ abstract class VaultRepository {
   Future<void> createTag(TagRow row);
   Future<void> deleteTag(String id);
   Future<List<TagRow>> listTags();
+
+  /// Reescreve um comando existente. Usado pela migração de formato de cifra —
+  /// apagar e recriar perderia a ordenação e a associação ao servidor.
+  Future<void> updateCommand(CommandRow row);
+
+  /// Reescreve uma tag existente. Apagar e recriar cortaria, por CASCADE, todas
+  /// as credenciais associadas a ela.
+  Future<void> updateTag(TagRow row);
+
+  /// Troca apenas o segredo TOTP cifrado, preservando o resto da linha de meta.
+  Future<void> updateTotpSecret(Uint8List totpSecretEnc);
+
+  /// Regrava a lista de hashes dos códigos de recuperação — usada para consumir
+  /// um código, que vale uma vez só.
+  Future<void> updateRecoveryCodes(String recoveryCodesHash);
 }
 
 /// Schema com todos os campos textuais cifrados (colunas `*_enc` em BLOB).

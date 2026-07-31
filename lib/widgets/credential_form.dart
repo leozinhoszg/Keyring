@@ -29,6 +29,7 @@ class _CredentialFormState extends State<_CredentialForm> {
   final _notes = TextEditingController();
   final Set<String> _tagIds = {};
   bool _favorite = false;
+  bool _showPassword = false;
   DateTime? _expires;
 
   @override
@@ -95,10 +96,21 @@ class _CredentialFormState extends State<_CredentialForm> {
       strengthScore: _password.text.isNotEmpty ? evaluateStrength(_password.text) : null,
     );
     String? dup;
-    if (widget.credential == null) {
-      dup = await vault.createCredential(input);
-    } else {
-      await vault.updateCredential(widget.credential!.id, input);
+    try {
+      if (widget.credential == null) {
+        dup = await vault.createCredential(input);
+      } else {
+        await vault.updateCredential(widget.credential!.id, input);
+      }
+    } on StateError {
+      // O auto-lock disparou com o formulário aberto: a DEK já foi zerada e não
+      // há como cifrar. Sem este aviso, o "Salvar" simplesmente não faria nada.
+      messenger.showSnackBar(const SnackBar(
+          content: Text('O cofre foi bloqueado por inatividade. Desbloqueie e salve de novo.')));
+      return;
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Não foi possível salvar: $e')));
+      return;
     }
     if (dup != null) {
       messenger.showSnackBar(
@@ -150,7 +162,21 @@ class _CredentialFormState extends State<_CredentialForm> {
                       Expanded(
                         child: TextField(
                           controller: _password,
-                          decoration: const InputDecoration(hintText: 'Senha'),
+                          // Escondida por padrão: o formulário fica aberto o
+                          // tempo todo da edição, à vista de quem passar.
+                          obscureText: !_showPassword,
+                          decoration: InputDecoration(
+                            hintText: 'Senha',
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _showPassword ? Icons.visibility_off : Icons.visibility,
+                                size: 18,
+                                color: PromaPalette.dim,
+                              ),
+                              tooltip: _showPassword ? 'Ocultar' : 'Mostrar',
+                              onPressed: () => setState(() => _showPassword = !_showPassword),
+                            ),
+                          ),
                           onChanged: (_) => setState(() {}),
                         ),
                       ),

@@ -37,29 +37,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _export() async {
     if (_exportPw.text.length < 8) return _toast('Senha de exportação: 8+ caracteres');
     final messenger = ScaffoldMessenger.of(context);
-    final dek = context.read<SessionProvider>().dek!;
+    final dek = context.read<SessionProvider>().dek;
+    if (dek == null) return _toast('O cofre foi bloqueado. Desbloqueie e tente de novo.');
     final backup = _backup();
-    final content = await backup.export(dek, _exportPw.text);
-    final dir = await getApplicationDocumentsDirectory();
-    // nome com data/hora legível; nunca sobrescreve um backup existente
-    final now = DateTime.now();
-    String two(int n) => n.toString().padLeft(2, '0');
-    final stamp =
-        '${now.year}-${two(now.month)}-${two(now.day)}_${two(now.hour)}-${two(now.minute)}-${two(now.second)}';
-    var path = p.join(dir.path, 'keyring-backup-$stamp.vault');
-    var i = 2;
-    while (await File(path).exists()) {
-      path = p.join(dir.path, 'keyring-backup-${stamp}_$i.vault');
-      i++;
+    // Sem este catch, disco cheio ou pasta sem permissão falham em silêncio e o
+    // usuário sai achando que tem um backup que nunca foi gravado.
+    try {
+      final content = await backup.export(dek, _exportPw.text);
+      final dir = await getApplicationDocumentsDirectory();
+      // nome com data/hora legível; nunca sobrescreve um backup existente
+      final now = DateTime.now();
+      String two(int n) => n.toString().padLeft(2, '0');
+      final stamp =
+          '${now.year}-${two(now.month)}-${two(now.day)}_${two(now.hour)}-${two(now.minute)}-${two(now.second)}';
+      var path = p.join(dir.path, 'keyring-backup-$stamp.vault');
+      var i = 2;
+      while (await File(path).exists()) {
+        path = p.join(dir.path, 'keyring-backup-${stamp}_$i.vault');
+        i++;
+      }
+      await File(path).writeAsString(content);
+      messenger.showSnackBar(SnackBar(content: Text('Backup salvo em: $path')));
+    } on FileSystemException catch (e) {
+      messenger.showSnackBar(
+          SnackBar(content: Text('Não foi possível gravar o backup: ${e.osError?.message ?? e.message}')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Falha ao exportar: $e')));
     }
-    await File(path).writeAsString(content);
-    messenger.showSnackBar(SnackBar(content: Text('Backup salvo em: $path')));
   }
 
   Future<void> _import() async {
     final messenger = ScaffoldMessenger.of(context);
     final vault = context.read<VaultProvider>();
-    final dek = context.read<SessionProvider>().dek!;
+    final dek = context.read<SessionProvider>().dek;
+    if (dek == null) return _toast('O cofre foi bloqueado. Desbloqueie e tente de novo.');
     final backup = _backup();
     final res = await FilePicker.pickFiles(withData: true, dialogTitle: 'Escolher backup .vault');
     if (res == null) return;
@@ -80,8 +91,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       messenger.showSnackBar(SnackBar(content: Text('$n itens importados')));
     } on SecretBoxAuthenticationError {
       messenger.showSnackBar(const SnackBar(content: Text('Senha do backup incorreta.')));
+    } on BackupTooLargeException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('$e')));
     } on FormatException {
       messenger.showSnackBar(const SnackBar(content: Text('Arquivo de backup inválido ou corrompido.')));
+    } on TypeError {
+      // Cast que falhou dentro do payload: JSON válido, conteúdo inesperado.
+      messenger.showSnackBar(
+          const SnackBar(content: Text('Backup com formato inesperado — nada foi importado.')));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('Falha ao importar: $e')));
     }

@@ -30,6 +30,12 @@ Future<void> main() async {
     await session.refreshStatus();
     final vault = VaultProvider(repo, crypto, () => session.dek);
 
+    // Trancar o cofre zera a DEK, mas títulos, URLs e projetos já decifrados
+    // continuariam na memória do provider — e na tela, por trás do bloqueio.
+    session.addListener(() {
+      if (!session.isUnlocked && vault.credentials.isNotEmpty) vault.clearCache();
+    });
+
     runApp(MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: session),
