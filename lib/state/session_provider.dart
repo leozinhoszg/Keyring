@@ -1,15 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:crypto/crypto.dart' as legacy; // sha256 para hash dos recovery codes
 import 'package:flutter/foundation.dart';
-import 'package:uuid/uuid.dart';
 
 import '../models/argon2_params.dart';
 import '../models/vault_settings.dart';
+import '../services/cipher_context.dart';
+import '../services/cipher_migration.dart';
 import '../services/crypto_service.dart';
 import '../services/quick_unlock.dart';
+import '../services/recovery_codes.dart';
 import '../services/totp_service.dart';
+import '../services/unlock_throttle.dart';
 import 'vault_repository.dart';
 
 class SetupResult {
@@ -43,8 +45,12 @@ class SessionProvider extends ChangeNotifier {
   final TotpService _totp;
   final Argon2Params _params;
   final QuickUnlockService _quick;
+  final UnlockThrottle _throttle;
+  final RecoveryCodes _recovery = RecoveryCodes();
 
-  SessionProvider(this._repo, this._crypto, this._totp, this._params, this._quick);
+  SessionProvider(this._repo, this._crypto, this._totp, this._params, this._quick,
+      {UnlockThrottle? throttle})
+      : _throttle = throttle ?? UnlockThrottle();
 
   bool _isSetup = false;
   Uint8List? _dek;
@@ -117,11 +123,10 @@ class SessionProvider extends ChangeNotifier {
 
     final secret = _totp.generateSecret();
     final keyUri = _totp.keyUri(secret, label: 'cofre', issuer: 'Keyring');
-    final totpEnc = await _crypto.encrypt(secret, dek);
+    final totpEnc = await _crypto.encrypt(secret, dek, context: CipherContext.totp);
 
-    final codes = List<String>.generate(8, (_) => const Uuid().v4().replaceAll('-', '').substring(0, 10));
-    final codesHash = jsonEncode(
-        codes.map((c) => legacy.sha256.convert(utf8.encode(c)).toString()).toList());
+    final codes = _recovery.generate();
+    final codesHash = _recovery.hashAll(codes, salt);
 
     _pendingDek = dek;
     _pendingSecret = secret;
@@ -158,6 +163,7 @@ class SessionProvider extends ChangeNotifier {
   }
 
   Future<bool> unlock(String masterPassword, String totpToken) async {
+    await _throttle.wait();
     final meta = await _repo.loadVaultMeta();
     if (meta == null) return false;
     final params = Argon2Params.fromJson(jsonDecode(meta.argon2Params) as Map<String, dynamic>);
@@ -166,12 +172,18 @@ class SessionProvider extends ChangeNotifier {
     try {
       dek = await _crypto.unwrapDek(meta.wrappedDek, kek);
     } catch (_) {
+      _throttle.registerFailure();
       return false; // senha errada (tag GCM)
     }
-    final secret = await _crypto.decrypt(meta.totpSecretEnc, dek);
-    if (!_totp.verify(totpToken, secret)) return false;
+    final secret = await _crypto.decrypt(meta.totpSecretEnc, dek, context: CipherContext.totp);
+    if (!_totp.verify(totpToken, secret)) {
+      _throttle.registerFailure();
+      return false;
+    }
+    _throttle.registerSuccess();
     _dek = dek;
     _settings = VaultSettings.fromJson(jsonDecode(meta.settings) as Map<String, dynamic>);
+    await _upgradeCipherFormat(dek);
 
     // A janela dos 7 dias conta do último login completo — e só dele.
     if (meta.wrappedDekQuick != null) {
@@ -184,6 +196,65 @@ class SessionProvider extends ChangeNotifier {
     _startTimer();
     notifyListeners();
     return true;
+  }
+
+  /// Abre o cofre com a senha mestra e um código de recuperação, para quem
+  /// perdeu o app de TOTP. Continuam sendo dois fatores: algo que se sabe (a
+  /// senha) e algo que se tem (o código guardado). O código é consumido — vale
+  /// uma vez só — e some da lista mesmo que o app feche em seguida.
+  Future<bool> unlockWithRecoveryCode(String masterPassword, String code) async {
+    await _throttle.wait();
+    final meta = await _repo.loadVaultMeta();
+    if (meta == null) return false;
+    final params = Argon2Params.fromJson(jsonDecode(meta.argon2Params) as Map<String, dynamic>);
+    final kek = await _crypto.deriveKek(masterPassword, meta.argon2Salt, params);
+    Uint8List dek;
+    try {
+      dek = await _crypto.unwrapDek(meta.wrappedDek, kek);
+    } catch (_) {
+      _throttle.registerFailure();
+      return false;
+    }
+
+    final restantes = _recovery.consume(code, meta.recoveryCodesHash, meta.argon2Salt);
+    if (restantes == null) {
+      _throttle.registerFailure();
+      return false;
+    }
+    await _repo.updateRecoveryCodes(restantes);
+    _throttle.registerSuccess();
+
+    _dek = dek;
+    _settings = VaultSettings.fromJson(jsonDecode(meta.settings) as Map<String, dynamic>);
+    await _upgradeCipherFormat(dek);
+    _startTimer();
+    notifyListeners();
+    return true;
+  }
+
+  /// Quantos códigos de recuperação ainda não foram usados.
+  Future<int> remainingRecoveryCodes() async {
+    final meta = await _repo.loadVaultMeta();
+    if (meta == null) return 0;
+    try {
+      return (jsonDecode(meta.recoveryCodesHash) as List).length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// Gera um novo segredo TOTP e o grava. É o passo seguinte a entrar por um
+  /// código de recuperação: sem isto o cofre continuaria preso ao autenticador
+  /// perdido. Exige o cofre aberto — o segredo é cifrado com a DEK.
+  Future<SetupResult> resetTotp() async {
+    final dek = _dek;
+    if (dek == null) throw StateError('Cofre bloqueado');
+    final secret = _totp.generateSecret();
+    final keyUri = _totp.keyUri(secret, label: 'cofre', issuer: 'Keyring');
+    await _repo.updateTotpSecret(
+        await _crypto.encrypt(secret, dek, context: CipherContext.totp));
+    notifyListeners();
+    return SetupResult(totpSecret: secret, keyUri: keyUri, recoveryCodes: const []);
   }
 
   /// Ativa o acesso rápido. Exige o cofre aberto — é o único momento em que o
@@ -261,9 +332,26 @@ class SessionProvider extends ChangeNotifier {
 
     _dek = dek;
     _settings = VaultSettings.fromJson(jsonDecode(meta.settings) as Map<String, dynamic>);
+    await _upgradeCipherFormat(dek);
     _startTimer();
     notifyListeners();
     return QuickUnlockOutcome.success;
+  }
+
+  /// Converte para o formato v2 o que tiver sobrado do formato antigo. É
+  /// idempotente e não faz nada num cofre já convertido, então sai barato nos
+  /// desbloqueios seguintes.
+  ///
+  /// Falhar aqui não pode custar o acesso ao cofre: a migração é transacional,
+  /// o cofre continua legível nos dois formatos, e a próxima abertura tenta de
+  /// novo. Por isso o erro é engolido — mas registrado, para não sumir calado.
+  Future<void> _upgradeCipherFormat(Uint8List dek) async {
+    try {
+      final n = await migrateCipherToV2(repo: _repo, crypto: _crypto, dek: dek);
+      if (n > 0) debugPrint('Keyring: $n campos convertidos para o formato de cifra v2.');
+    } catch (e) {
+      debugPrint('Keyring: conversão para o formato de cifra v2 adiada — $e');
+    }
   }
 
   /// Apaga as duas metades. Não notifica — quem chama decide quando.

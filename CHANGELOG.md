@@ -5,6 +5,63 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/) e o versio
 
 ## [Não lançado]
 
+## [1.2.0] — 2026-07-29
+
+Rodada de segurança guiada por uma auditoria do código contra as práticas de
+criptografia aplicada, OWASP, resiliência e testing.
+
+### Adicionado
+
+- **Recuperação quando o autenticador se perde.** Os códigos de recuperação
+  eram gerados e exibidos no setup, mas nenhuma tela os aceitava — quem
+  perdesse o Authy perdia o cofre com os códigos na mão. Agora a tela de
+  desbloqueio tem "Perdi o acesso ao autenticador": senha mestra + um código
+  abrem o cofre e levam direto à reconfiguração do TOTP. Cada código vale uma
+  vez, e o segredo antigo é descartado no processo.
+
+- **Códigos de recuperação com 100 bits de entropia** (`XXXXX-XXXXX-XXXXX-XXXXX`),
+  contra 40 bits antes, e com hash salgado. Os códigos antigos continuam
+  válidos até serem usados.
+
+### Segurança
+
+- **Cada campo cifrado agora é amarrado ao seu lugar** (AAD com o registro e o
+  campo de origem). Antes, quem tivesse acesso ao arquivo podia copiar o blob
+  da senha de um registro para outro e o app exibia o segredo no lugar errado,
+  sem nada acusar. Os blobs passam a carregar a versão do formato, e o cofre é
+  convertido automaticamente no primeiro desbloqueio — em uma transação, com o
+  formato antigo continuando legível enquanto isso.
+
+- **Tentativas de desbloqueio têm atraso progressivo**, dobrando a cada erro
+  até 30 s. As duas primeiras não esperam: errar a senha uma vez é normal.
+
+- **Parâmetros do Argon2 são validados** ao vir do cofre ou de um backup. Um
+  arquivo adulterado com `memoryCost` absurdo derrubava o app na abertura.
+
+- **Senha escondida no formulário de credencial**, com botão para revelar.
+
+- **O que foi decifrado para a tela é descartado no auto-lock.** Títulos, URLs
+  e projetos continuavam em memória depois de o cofre trancar.
+
+### Corrigido
+
+- **Importar um backup passa a ser tudo ou nada.** Um item malformado no meio
+  do arquivo deixava o cofre com metade do backup dentro — estado
+  indistinguível do correto, e reimportar duplicava tudo.
+
+- **Backups grandes demais são recusados** antes de decifrar, em vez de serem
+  carregados inteiros na memória.
+
+- **Erros que sumiam sem aviso agora aparecem:** falha ao gravar o backup
+  (disco cheio, permissão), cofre trancado por inatividade com um formulário
+  aberto (o "Salvar" simplesmente não fazia nada), e falhas inesperadas no
+  desbloqueio, que deixavam o botão travado para sempre.
+
+### Alterado
+
+- **A derivação da senha mestra saiu da thread da interface.** O Argon2 é
+  pesado de propósito e congelava a tela a cada desbloqueio.
+
 ## [1.1.1] — 2026-07-29
 
 ### Corrigido

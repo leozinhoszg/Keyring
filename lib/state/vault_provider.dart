@@ -5,6 +5,7 @@ import '../models/credential.dart';
 import '../models/server.dart';
 import '../models/server_command.dart';
 import '../models/tag.dart';
+import '../services/cipher_context.dart';
 import '../services/crypto_service.dart';
 import 'vault_repository.dart';
 
@@ -30,19 +31,31 @@ class VaultProvider extends ChangeNotifier {
 
   String _nowIso() => DateTime.now().toIso8601String();
 
+  /// Descarta o que foi decifrado para a tela. Chamado quando o cofre tranca:
+  /// sem isto, títulos, URLs e projetos continuariam legíveis na memória do
+  /// processo mesmo com a DEK já zerada.
+  void clearCache() {
+    credentials = [];
+    servers = [];
+    tags = [];
+    notifyListeners();
+  }
+
   // ---- helpers de cripto ----
-  Future<Uint8List> _enc(String v) => _crypto.encrypt(v, _key);
-  Future<Uint8List?> _encN(String? v) async =>
-      (v == null || v.isEmpty) ? null : await _crypto.encrypt(v, _key);
-  Future<String> _dec(Uint8List blob) => _crypto.decrypt(blob, _key);
-  Future<String?> _decN(Uint8List? blob) async => blob == null ? null : await _crypto.decrypt(blob, _key);
+  // Todo blob é amarrado ao registro e ao campo de onde veio (ver CipherContext).
+  Future<Uint8List> _enc(String v, String ctx) => _crypto.encrypt(v, _key, context: ctx);
+  Future<Uint8List?> _encN(String? v, String ctx) async =>
+      (v == null || v.isEmpty) ? null : await _crypto.encrypt(v, _key, context: ctx);
+  Future<String> _dec(Uint8List blob, String ctx) => _crypto.decrypt(blob, _key, context: ctx);
+  Future<String?> _decN(Uint8List? blob, String ctx) async =>
+      blob == null ? null : await _crypto.decrypt(blob, _key, context: ctx);
 
   // ---- tags ----
   Future<void> loadTags() async {
     final rows = await _repo.listTags();
     final result = <Tag>[];
     for (final r in rows) {
-      result.add(Tag(id: r.id, name: await _dec(r.nameEnc), color: r.color));
+      result.add(Tag(id: r.id, name: await _dec(r.nameEnc, CipherContext.tag(r.id)), color: r.color));
     }
     result.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     tags = result;
@@ -53,12 +66,13 @@ class VaultProvider extends ChangeNotifier {
     // dedup por nome em memória (nome é cifrado no banco)
     final existing = await _repo.listTags();
     for (final r in existing) {
-      if ((await _dec(r.nameEnc)).toLowerCase() == name.toLowerCase()) {
-        return Tag(id: r.id, name: await _dec(r.nameEnc), color: r.color);
+      final decoded = await _dec(r.nameEnc, CipherContext.tag(r.id));
+      if (decoded.toLowerCase() == name.toLowerCase()) {
+        return Tag(id: r.id, name: decoded, color: r.color);
       }
     }
     final id = _uuid.v4();
-    await _repo.createTag(TagRow(id: id, nameEnc: await _enc(name)));
+    await _repo.createTag(TagRow(id: id, nameEnc: await _enc(name, CipherContext.tag(id))));
     await loadTags();
     return Tag(id: id, name: name);
   }
@@ -75,9 +89,9 @@ class VaultProvider extends ChangeNotifier {
     for (final r in rows) {
       result.add(CredentialSummary(
         id: r.id,
-        title: await _dec(r.titleEnc),
-        url: await _decN(r.urlEnc),
-        project: await _decN(r.projectEnc),
+        title: await _dec(r.titleEnc, CipherContext.credential(r.id, 'title')),
+        url: await _decN(r.urlEnc, CipherContext.credential(r.id, 'url')),
+        project: await _decN(r.projectEnc, CipherContext.credential(r.id, 'project')),
         isFavorite: r.isFavorite == 1,
         tags: await _repo.tagsOf(r.id),
         hasUsername: r.usernameEnc != null,
@@ -117,11 +131,14 @@ class VaultProvider extends ChangeNotifier {
         }
       }
     }
+    String c(String field) => CipherContext.credential(id, field);
     await _repo.createCredential(
       CredentialRow(
-        id: id, titleEnc: await _enc(i.title),
-        usernameEnc: await _encN(i.username), passwordEnc: await _encN(i.password),
-        urlEnc: await _encN(i.url), notesEnc: await _encN(i.notes), projectEnc: await _encN(i.project),
+        id: id, titleEnc: await _enc(i.title, c('title')),
+        usernameEnc: await _encN(i.username, c('username')),
+        passwordEnc: await _encN(i.password, c('password')),
+        urlEnc: await _encN(i.url, c('url')), notesEnc: await _encN(i.notes, c('notes')),
+        projectEnc: await _encN(i.project, c('project')),
         isFavorite: i.isFavorite ? 1 : 0, strengthScore: i.strengthScore, passwordHmac: hmac,
         expiresAt: i.expiresAt, createdAt: _nowIso(), updatedAt: _nowIso(),
       ),
@@ -133,11 +150,14 @@ class VaultProvider extends ChangeNotifier {
   Future<void> updateCredential(String id, CredentialInput i) async {
     final existing = await _repo.findCredential(id);
     if (existing == null) return;
+    String c(String field) => CipherContext.credential(id, field);
     await _repo.updateCredential(
       CredentialRow(
-        id: id, titleEnc: await _enc(i.title),
-        usernameEnc: await _encN(i.username), passwordEnc: await _encN(i.password),
-        urlEnc: await _encN(i.url), notesEnc: await _encN(i.notes), projectEnc: await _encN(i.project),
+        id: id, titleEnc: await _enc(i.title, c('title')),
+        usernameEnc: await _encN(i.username, c('username')),
+        passwordEnc: await _encN(i.password, c('password')),
+        urlEnc: await _encN(i.url, c('url')), notesEnc: await _encN(i.notes, c('notes')),
+        projectEnc: await _encN(i.project, c('project')),
         isFavorite: i.isFavorite ? 1 : 0, strengthScore: i.strengthScore,
         passwordHmac: (i.password != null && i.password!.isNotEmpty)
             ? await _crypto.hmacHex(i.password!, _key)
@@ -154,7 +174,8 @@ class VaultProvider extends ChangeNotifier {
     final r = await _repo.findCredential(id);
     if (r == null) return '';
     final blob = field == 'password' ? r.passwordEnc : field == 'username' ? r.usernameEnc : r.notesEnc;
-    return blob == null ? '' : _crypto.decrypt(blob, _key);
+    final name = field == 'password' || field == 'username' ? field : 'notes';
+    return blob == null ? '' : _dec(blob, CipherContext.credential(id, name));
   }
 
   // ---- servidores ----
@@ -162,12 +183,13 @@ class VaultProvider extends ChangeNotifier {
     final rows = await _repo.listServers();
     final result = <ServerSummary>[];
     for (final r in rows) {
+      String s(String field) => CipherContext.server(r.id, field);
       result.add(ServerSummary(
         id: r.id,
-        name: await _dec(r.nameEnc),
-        ip: await _decN(r.ipEnc),
-        environment: await _decN(r.environmentEnc),
-        services: await _decN(r.servicesEnc),
+        name: await _dec(r.nameEnc, s('name')),
+        ip: await _decN(r.ipEnc, s('ip')),
+        environment: await _decN(r.environmentEnc, s('environment')),
+        services: await _decN(r.servicesEnc, s('services')),
         isFavorite: r.isFavorite == 1,
         hasNotes: r.notesEnc != null,
       ));
@@ -191,10 +213,12 @@ class VaultProvider extends ChangeNotifier {
 
   Future<String> createServer(ServerInput i) async {
     final id = _uuid.v4();
+    String s(String field) => CipherContext.server(id, field);
     await _repo.createServer(ServerRow(
-      id: id, nameEnc: await _enc(i.name), ipEnc: await _encN(i.ip),
-      environmentEnc: await _encN(i.environment), servicesEnc: await _encN(i.services),
-      notesEnc: await _encN(i.notes), isFavorite: i.isFavorite ? 1 : 0,
+      id: id, nameEnc: await _enc(i.name, s('name')), ipEnc: await _encN(i.ip, s('ip')),
+      environmentEnc: await _encN(i.environment, s('environment')),
+      servicesEnc: await _encN(i.services, s('services')),
+      notesEnc: await _encN(i.notes, s('notes')), isFavorite: i.isFavorite ? 1 : 0,
       createdAt: _nowIso(), updatedAt: _nowIso(),
     ));
     return id;
@@ -203,10 +227,12 @@ class VaultProvider extends ChangeNotifier {
   Future<void> updateServer(String id, ServerInput i) async {
     final ex = await _repo.findServer(id);
     if (ex == null) return;
+    String s(String field) => CipherContext.server(id, field);
     await _repo.updateServer(ServerRow(
-      id: id, nameEnc: await _enc(i.name), ipEnc: await _encN(i.ip),
-      environmentEnc: await _encN(i.environment), servicesEnc: await _encN(i.services),
-      notesEnc: await _encN(i.notes), isFavorite: i.isFavorite ? 1 : 0,
+      id: id, nameEnc: await _enc(i.name, s('name')), ipEnc: await _encN(i.ip, s('ip')),
+      environmentEnc: await _encN(i.environment, s('environment')),
+      servicesEnc: await _encN(i.services, s('services')),
+      notesEnc: await _encN(i.notes, s('notes')), isFavorite: i.isFavorite ? 1 : 0,
       createdAt: ex.createdAt, updatedAt: _nowIso(),
     ));
   }
@@ -214,7 +240,9 @@ class VaultProvider extends ChangeNotifier {
   Future<void> deleteServer(String id) => _repo.deleteServer(id);
   Future<String> revealServerNotes(String id) async {
     final r = await _repo.findServer(id);
-    return (r?.notesEnc == null) ? '' : _crypto.decrypt(r!.notesEnc!, _key);
+    return (r?.notesEnc == null)
+        ? ''
+        : _dec(r!.notesEnc!, CipherContext.server(id, 'notes'));
   }
 
   Future<List<ServerCommand>> commandsOf(String serverId) async {
@@ -223,14 +251,23 @@ class VaultProvider extends ChangeNotifier {
     for (final c in rows) {
       result.add(ServerCommand(
         id: c.id, serverId: c.serverId,
-        label: await _dec(c.labelEnc), command: await _dec(c.commandEnc), sortOrder: c.sortOrder,
+        label: await _dec(c.labelEnc, CipherContext.command(c.id, 'label')),
+        command: await _dec(c.commandEnc, CipherContext.command(c.id, 'command')),
+        sortOrder: c.sortOrder,
       ));
     }
     return result;
   }
 
-  Future<void> addCommand(String serverId, String label, String command) async => _repo.addCommand(
-        CommandRow(id: _uuid.v4(), serverId: serverId, labelEnc: await _enc(label), commandEnc: await _enc(command)),
-      );
+  Future<void> addCommand(String serverId, String label, String command) async {
+    final id = _uuid.v4();
+    await _repo.addCommand(CommandRow(
+      id: id,
+      serverId: serverId,
+      labelEnc: await _enc(label, CipherContext.command(id, 'label')),
+      commandEnc: await _enc(command, CipherContext.command(id, 'command')),
+    ));
+  }
+
   Future<void> deleteCommand(String id) => _repo.deleteCommand(id);
 }

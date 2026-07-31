@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:keyring/models/argon2_params.dart';
 import 'package:keyring/models/credential.dart';
 import 'package:keyring/services/backup.dart';
 import 'package:keyring/services/crypto_service.dart';
@@ -49,5 +51,72 @@ void main() {
     expect(await provider2.reveal(provider2.credentials.first.id, 'password'), 's3nha');
 
     await Directory(dir.path).delete(recursive: true);
+  });
+
+  /// Monta um arquivo .vault legítimo (cifra de verdade) com o payload dado.
+  /// Permite fabricar backups malformados que só quebram DEPOIS de decifrar.
+  Future<String> vaultFileWith(Map<String, dynamic> payload, String pw) async {
+    final crypto = CryptoService();
+    const params = Argon2Params();
+    final salt = crypto.randomSalt();
+    final kek = await crypto.deriveKek(pw, salt, params);
+    final blob = await crypto.encrypt(jsonEncode(payload), kek);
+    return base64Encode(utf8.encode(jsonEncode({
+      'v': 1,
+      'salt': base64Encode(salt),
+      'params': params.toJson(),
+      'data': base64Encode(blob),
+    })));
+  }
+
+  test('import que falha no meio não deixa itens gravados', () async {
+    final (provider, backup, dek) = await fresh();
+    // A segunda credencial não tem título: quebra ao ser gravada, depois da
+    // primeira já ter entrado. Sem transação, o cofre fica com metade do backup.
+    final file = await vaultFileWith({
+      'credentials': [
+        {'title': 'Primeira', 'password': 'a'},
+        {'title': null, 'password': 'b'},
+      ],
+      'servers': <dynamic>[],
+      'tags': <dynamic>[],
+    }, 'pw-do-backup');
+
+    await expectLater(
+      () => backup.import(dek as dynamic, file, 'pw-do-backup'),
+      throwsA(anything),
+    );
+
+    await provider.loadCredentials();
+    expect(provider.credentials, isEmpty,
+        reason: 'import atômico: falha no meio desfaz o que já entrou');
+  });
+
+  test('import roda duas vezes sem duplicar as tags', () async {
+    final (provider, backup, dek) = await fresh();
+    final file = await vaultFileWith({
+      'credentials': [
+        {'title': 'GitHub', 'password': 'a', 'tags': ['infra']},
+      ],
+      'servers': <dynamic>[],
+      'tags': [
+        {'name': 'infra', 'color': null},
+      ],
+    }, 'pw-do-backup');
+
+    await backup.import(dek as dynamic, file, 'pw-do-backup');
+    await backup.import(dek as dynamic, file, 'pw-do-backup');
+
+    await provider.loadTags();
+    expect(provider.tags.length, 1, reason: 'a tag existente é reaproveitada');
+  });
+
+  test('arquivo grande demais é recusado antes de decifrar', () async {
+    final (_, backup, dek) = await fresh();
+    final huge = 'A' * (kMaxBackupFileBytes + 1);
+    await expectLater(
+      () => backup.import(dek as dynamic, huge, 'qualquer'),
+      throwsA(isA<BackupTooLargeException>()),
+    );
   });
 }

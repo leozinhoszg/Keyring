@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../state/session_provider.dart';
 import '../widgets/keyring_background.dart';
+import 'recovery_screen.dart';
 
 class UnlockScreen extends StatefulWidget {
   const UnlockScreen({super.key});
@@ -73,7 +74,18 @@ class _UnlockScreenState extends State<UnlockScreen> {
 
   Future<void> _unlock() async {
     setState(() => _busy = true);
-    final ok = await context.read<SessionProvider>().unlock(_pw.text, _code.text);
+    bool ok;
+    try {
+      ok = await context.read<SessionProvider>().unlock(_pw.text, _code.text);
+    } catch (e) {
+      // Falha inesperada (banco ilegível, por exemplo). Sem o finally o botão
+      // ficaria desabilitado para sempre e a tela pareceria travada.
+      if (!mounted) return;
+      setState(() => _busy = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Erro ao abrir o cofre: $e')));
+      return;
+    }
     if (!mounted) return;
     setState(() => _busy = false);
     if (!ok) {
@@ -148,6 +160,13 @@ class _UnlockScreenState extends State<UnlockScreen> {
                             FilledButton(
                                 onPressed: _busy ? null : _unlock,
                                 child: const Text('Desbloquear')),
+                            TextButton(
+                              onPressed: _busy
+                                  ? null
+                                  : () => Navigator.of(context).push(MaterialPageRoute(
+                                      builder: (_) => const RecoveryScreen())),
+                              child: const Text('Perdi o acesso ao autenticador'),
+                            ),
                           ],
                         ],
                       ),

@@ -172,7 +172,14 @@ class _SetupScreenState extends State<SetupScreen> {
             ]),
           ),
           const SizedBox(height: 12),
-          const Text('Códigos de recuperação (guarde em local seguro):', style: TextStyle(fontWeight: FontWeight.w600)),
+          const Text('Códigos de recuperação (guarde em local seguro):',
+              style: TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          const Text(
+            'Se você perder o autenticador, cada um destes códigos abre o cofre '
+            'uma vez, junto com a senha mestra.',
+            style: TextStyle(color: PromaPalette.muted, fontSize: 12),
+          ),
           const SizedBox(height: 6),
           Wrap(
             spacing: 6,
