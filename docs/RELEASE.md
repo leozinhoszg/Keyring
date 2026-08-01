@@ -119,12 +119,30 @@ O SmartScreen decide por três critérios, e um `.exe` não assinado falha em to
 | Certificado | Custo | Alcance |
 |---|---|---|
 | Autoassinado | zero | Só nas máquinas onde ele for instalado como confiável |
-| Azure Trusted Signing | ~US$ 10/mês | Qualquer máquina; exige validação de identidade |
-| EV de uma CA | ~R$ 2.000/ano + token | Qualquer máquina, com reputação imediata |
-| OV de uma CA | ~R$ 1.000/ano | Qualquer máquina, mas o aviso persiste até acumular reputação |
+| EV de uma CA | ~US$ 400–600/ano + token | Qualquer máquina, com reputação imediata |
+| OV de uma CA | ~US$ 200–400/ano + token | Qualquer máquina, mas o aviso persiste até acumular reputação |
 
 O autoassinado cobre o caso de uso interno. Para distribuir publicamente, só um certificado
 de CA resolve — e o script abaixo aceita os dois, então trocar depois é só mudar um parâmetro.
+
+Desde 2023 as regras do CA/Browser Forum exigem que a chave privada fique em hardware, então
+qualquer certificado de CA vem com token USB ou HSM em nuvem. Só o **EV** tem reputação
+imediata no SmartScreen; com um OV o aviso continua até o binário acumular downloads.
+
+### Azure Artifact Signing não serve para o Brasil
+
+O serviço da Microsoft (ex-Trusted Signing) sairia por ~US$ 10/mês, mas emite certificados de
+confiança pública apenas para organizações nos EUA, Canadá, União Europeia, Reino Unido,
+Austrália, Nova Zelândia, Japão, Coreia do Sul, Singapura, Suíça, Noruega e Israel —
+desenvolvedores individuais, só EUA e Canadá. **O Brasil está fora**, e o crédito da conta
+gratuita não muda isso: a barreira é a validação de identidade.
+
+Não se engane com a tabela de regiões da documentação: "Brazil South" aparece como região
+suportada, mas isso é onde o recurso é hospedado, não quem pode se cadastrar.
+
+Resta o **Private Trust**, sem restrição geográfica — só que ele é o mesmo modelo do
+autoassinado (vale apenas onde o certificado for instalado), com a chave em HSM gerenciado.
+Pagar por isso só compensa se a gestão da chave for o problema; para o SmartScreen, não muda nada.
 
 ## Assinando
 
