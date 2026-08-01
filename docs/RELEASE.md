@@ -98,3 +98,72 @@ não os carrega, por design. Os códigos de recuperação também são novos.
 
 Da próxima atualização em diante, nada disso é necessário: o APK instala por cima e o cofre
 fica onde está.
+
+# Assinatura do executável Windows
+
+Assunto diferente do APK: são sistemas de assinatura sem relação um com o outro. A chave
+`.jks` acima não serve para o Windows, e o certificado abaixo não serve para o Android.
+
+## Por que o SmartScreen barra o app
+
+Sem assinatura, o Windows exibe **"O Windows protegeu o computador"** a cada versão nova.
+O SmartScreen decide por três critérios, e um `.exe` não assinado falha em todos:
+
+- **Certificado de code signing** — é o que identifica o editor.
+- **Reputação do arquivo** — cada build tem um hash novo, sem histórico.
+- **Marca de origem** — arquivos baixados da internet carregam o *Mark of the Web*, que
+  dispara a checagem. Por isso o `.zip` do release aciona o aviso e uma cópia local, não.
+
+## O que a assinatura resolve, e até onde
+
+| Certificado | Custo | Alcance |
+|---|---|---|
+| Autoassinado | zero | Só nas máquinas onde ele for instalado como confiável |
+| Azure Trusted Signing | ~US$ 10/mês | Qualquer máquina; exige validação de identidade |
+| EV de uma CA | ~R$ 2.000/ano + token | Qualquer máquina, com reputação imediata |
+| OV de uma CA | ~R$ 1.000/ano | Qualquer máquina, mas o aviso persiste até acumular reputação |
+
+O autoassinado cobre o caso de uso interno. Para distribuir publicamente, só um certificado
+de CA resolve — e o script abaixo aceita os dois, então trocar depois é só mudar um parâmetro.
+
+## Assinando
+
+Requer o Windows SDK (`winget install --id Microsoft.WindowsSDK`), que traz o `signtool.exe`.
+
+```powershell
+flutter build windows --release
+.\tool\assinar-windows.ps1                    # gera o certificado na primeira vez
+```
+
+Para o aviso sumir **nesta máquina**, o certificado precisa entrar na lista de editores
+confiáveis — num terminal como Administrador:
+
+```powershell
+.\tool\assinar-windows.ps1 -InstalarConfianca
+```
+
+Em outras máquinas, repita esse passo nelas ou distribua o certificado por GPO.
+
+Com um certificado comprado, o fluxo é o mesmo:
+
+```powershell
+.\tool\assinar-windows.ps1 -Pfx C:\caminho\keyring-ev.pfx
+```
+
+> **Guarde o `.pfx` e a senha com backup.** Trocar de certificado faz o Windows tratar as
+> versões novas como de **outro editor**, e a reputação acumulada volta a zero.
+
+O script sempre aplica **carimbo de tempo**: sem ele, as assinaturas param de valer quando o
+certificado expira, inclusive nas versões já distribuídas.
+
+## Saída de emergência para quem baixar
+
+Enquanto não houver certificado de CA, quem baixar o `.zip` verá o aviso. O caminho é
+**Mais informações → Executar assim mesmo** — o botão só aparece depois do "Mais informações",
+por isso o diálogo parece oferecer apenas "Não executar".
+
+Alternativa para quem prefere linha de comando, removendo a marca de origem do arquivo baixado:
+
+```powershell
+Unblock-File .\keyring-1.2.0-windows-x64.zip
+```
