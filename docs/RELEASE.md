@@ -116,18 +116,35 @@ O SmartScreen decide por três critérios, e um `.exe` não assinado falha em to
 
 ## O que a assinatura resolve, e até onde
 
-| Certificado | Custo | Alcance |
+| Certificado | Custo (Brasil, 1 ano) | Alcance |
 |---|---|---|
 | Autoassinado | zero | Só nas máquinas onde ele for instalado como confiável |
-| EV de uma CA | ~US$ 400–600/ano + token | Qualquer máquina, com reputação imediata |
-| OV de uma CA | ~US$ 200–400/ano + token | Qualquer máquina, mas o aviso persiste até acumular reputação |
-
-O autoassinado cobre o caso de uso interno. Para distribuir publicamente, só um certificado
-de CA resolve — e o script abaixo aceita os dois, então trocar depois é só mudar um parâmetro.
+| OV de uma CA | R$ 1.400 – 3.000 + token | Identifica o editor, mas **não garante** que o aviso suma |
+| EV de uma CA | R$ 2.200 – 3.600 + token | Idem — o EV deixou de dar vantagem no SmartScreen |
 
 Desde 2023 as regras do CA/Browser Forum exigem que a chave privada fique em hardware, então
-qualquer certificado de CA vem com token USB ou HSM em nuvem. Só o **EV** tem reputação
-imediata no SmartScreen; com um OV o aviso continua até o binário acumular downloads.
+qualquer certificado de CA vem com token USB ou HSM em nuvem, e a validade máxima caiu para
+1 ano — o custo é recorrente.
+
+### Comprar um certificado não garante que o aviso desapareça
+
+Durante anos o EV dava reputação imediata no SmartScreen. **A Microsoft mudou isso.** Hoje
+todo binário assinado — EV ou OV — precisa acumular reputação organicamente, por downloads e
+execuções sem incidentes. Um app com poucos usuários pode continuar exibindo o aviso
+indefinidamente, mesmo assinado e pago. Boa parte dos vendedores ainda anuncia "reputação
+imediata"; a documentação da Microsoft diz o contrário.
+
+Consequência prática: para um projeto pequeno, o certificado pago resolve o "editor
+desconhecido", mas não necessariamente a tela do SmartScreen. Pesar isso antes de assinar
+um contrato anual.
+
+### ICP-Brasil não serve
+
+Certificados A1/A3 (Certisign, Serasa, Safeweb, Soluti, VALID, Bry) são para NF-e, e-CNPJ e
+assinatura de documentos. A ICP-Brasil **proibiu** a emissão de certificados de assinatura de
+código; os emitidos antes da resolução valem até expirar. Não há caminho por aí — as CAs que
+funcionam são as internacionais (Sectigo, DigiCert, GlobalSign), vendidas no Brasil por
+revendas.
 
 ### Azure Artifact Signing não serve para o Brasil
 
